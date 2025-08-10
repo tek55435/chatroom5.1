@@ -42,6 +42,11 @@ class _HomePageState extends State<HomePage> {
   final roomController = TextEditingController(text: 'main');
   final nameController = TextEditingController(text: 'Guest');
   final inputController = TextEditingController();
+  
+  // Audio recording variables for STT
+  dynamic mediaRecorder;
+  List<dynamic> audioChunks = [];
+  bool isRecording = false;
 
   bool joined = false;
   bool micOn = false;
@@ -951,6 +956,151 @@ class _HomePageState extends State<HomePage> {
       appendChat('TTS failed: Technical error');
     }
   }
+  
+  // Function to use our new API endpoint for text-to-speech
+  Future<void> useDirectTTS(String text) async {
+    try {
+      appendTranscript('[info] Using direct TTS API: $text');
+      
+      // Make HTTP request to our TTS endpoint
+      final response = await http.post(
+        Uri.parse('http://localhost:3000/api/tts'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'text': text}),
+      );
+      
+      if (response.statusCode == 200) {
+        appendTranscript('[info] TTS API response received, playing audio...');
+        
+        // Play the audio using Web Audio API
+        final audioBlob = html.Blob([response.bodyBytes], 'audio/mpeg');
+        final audioUrl = html.Url.createObjectUrlFromBlob(audioBlob);
+        final audioElement = html.AudioElement()..src = audioUrl;
+        audioElement.play();
+        
+        appendTranscript('[success] Direct TTS audio playing');
+      } else {
+        appendTranscript('[error] Failed to get TTS: ${response.statusCode}');
+        print('TTS API error: ${response.body}');
+      }
+    } catch (e) {
+      appendTranscript('[error] Exception using TTS API: $e');
+      print('Error with TTS API: $e');
+    }
+  }
+  
+  // Function to start recording audio for STT
+  void startRecording() {
+    try {
+      appendTranscript('[info] Starting audio recording for STT...');
+      
+      final constraints = js.JsObject.jsify({
+        'audio': true,
+        'video': false
+      });
+      
+      js.context['navigator']['mediaDevices'].callMethod('getUserMedia', [constraints])
+        .then((stream) {
+          mediaRecorder = js.context['MediaRecorder'].construct(stream);
+          audioChunks = [];
+          
+          js.context.callMethod('eval', ['''
+            (function(recorder) {
+              recorder.addEventListener('dataavailable', function(event) {
+                window.dartAudioChunkAvailable(event.data);
+              });
+              
+              recorder.addEventListener('stop', function() {
+                window.dartRecordingComplete();
+              });
+            })(arguments[0]);
+          '''])(mediaRecorder);
+          
+          // Set up callbacks from JavaScript to Dart
+          js.context['dartAudioChunkAvailable'] = (dynamic chunk) {
+            audioChunks.add(chunk);
+          };
+          
+          js.context['dartRecordingComplete'] = () {
+            convertSpeechToText();
+          };
+          
+          mediaRecorder.callMethod('start', []);
+          setState(() {
+            isRecording = true;
+          });
+          
+          appendTranscript('[info] Recording started. Speak now...');
+        })
+        .catchError((error) {
+          appendTranscript('[error] Failed to start recording: $error');
+          print('Error accessing microphone: $error');
+        });
+    } catch (e) {
+      appendTranscript('[error] Exception starting recording: $e');
+      print('Error starting recording: $e');
+    }
+  }
+  
+  // Function to stop recording
+  void stopRecording() {
+    if (mediaRecorder != null) {
+      appendTranscript('[info] Stopping recording...');
+      mediaRecorder.callMethod('stop', []);
+      setState(() {
+        isRecording = false;
+      });
+    }
+  }
+  
+  // Function to send audio to STT API
+  Future<void> convertSpeechToText() async {
+    try {
+      appendTranscript('[info] Converting speech to text...');
+      
+      // Create a Blob from audio chunks
+      final options = js.JsObject.jsify({'type': 'audio/webm'});
+      final blob = js.context['Blob'].construct(js.JsArray.from(audioChunks), options);
+      
+      // Create FormData
+      final formData = js.context['FormData'].construct();
+      formData.callMethod('append', ['audio', blob, 'recording.webm']);
+      
+      // Create XMLHttpRequest to handle the upload
+      final xhr = html.HttpRequest();
+      xhr.open('POST', 'http://localhost:3000/api/stt');
+      
+      // Set up completion handler
+      xhr.onLoad.listen((event) {
+        if (xhr.status == 200) {
+          final result = json.decode(xhr.responseText ?? '{}');
+          final text = result['text'] as String?;
+          
+          if (text != null && text.isNotEmpty) {
+            appendTranscript('[success] Speech recognized: $text');
+            inputController.text = text;
+          } else {
+            appendTranscript('[warning] No speech recognized');
+          }
+        } else {
+          appendTranscript('[error] STT API error: ${xhr.status}');
+          print('STT API error response: ${xhr.responseText}');
+        }
+      });
+      
+      // Set up error handler
+      xhr.onError.listen((event) {
+        appendTranscript('[error] STT API network error');
+        print('STT API network error: $event');
+      });
+      
+      // Send the request
+      xhr.send(formData);
+    } catch (e) {
+      appendTranscript('[error] Exception converting speech to text: $e');
+      print('Error with STT API: $e');
+    }
+  }
 
   @override
   void dispose() {
@@ -1163,8 +1313,31 @@ class _HomePageState extends State<HomePage> {
                                   IconButton(
                                     icon: const Icon(Icons.volume_up),
                                     onPressed: sendTypedAsTTS,
-                                    tooltip: 'Send as TTS',
+                                    tooltip: 'Send as TTS via WebRTC',
                                     color: Colors.blue[700],
+                                    iconSize: 30,
+                                    padding: const EdgeInsets.all(8),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: const Icon(Icons.record_voice_over),
+                                    onPressed: () {
+                                      final text = inputController.text.trim();
+                                      if (text.isNotEmpty) {
+                                        useDirectTTS(text);
+                                      }
+                                    },
+                                    tooltip: 'Direct TTS API',
+                                    color: Colors.green[700],
+                                    iconSize: 30,
+                                    padding: const EdgeInsets.all(8),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: Icon(isRecording ? Icons.stop : Icons.mic),
+                                    onPressed: isRecording ? stopRecording : startRecording,
+                                    tooltip: isRecording ? 'Stop Recording' : 'Start Speech-to-Text',
+                                    color: isRecording ? Colors.red : Colors.blue[700],
                                     iconSize: 30,
                                     padding: const EdgeInsets.all(8),
                                   ),
