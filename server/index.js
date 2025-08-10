@@ -4,6 +4,8 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import https from "https";
+import multer from "multer";
 
 dotenv.config();
 
@@ -29,6 +31,149 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "5mb" })); // for any JSON endpoints
 app.use(express.static(path.join(__dirname, "public"))); // serve Flutter web build from public folder
+
+// Set up multer for handling multipart form data (for STT)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB max file size
+  }
+});
+
+// Function to make TTS request to OpenAI API
+async function makeTTSRequest(text, voice = 'alloy') {
+  return new Promise((resolve, reject) => {
+    if (!OPENAI_API_KEY) {
+      reject(new Error('OpenAI API key not set. Please set the OPENAI_API_KEY environment variable.'));
+      return;
+    }
+    
+    const requestData = JSON.stringify({
+      model: 'tts-1',
+      input: text,
+      voice: voice, // Can be 'alloy', 'echo', 'fable', 'onyx', 'nova', or 'shimmer'
+      response_format: 'mp3'
+    });
+    
+    const options = {
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/audio/speech',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Length': requestData.length
+      }
+    };
+    
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        let errorData = '';
+        res.on('data', (chunk) => {
+          errorData += chunk;
+        });
+        res.on('end', () => {
+          reject(new Error(`OpenAI API returned ${res.statusCode}: ${errorData}`));
+        });
+        return;
+      }
+      
+      const chunks = [];
+      res.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve(buffer);
+      });
+    });
+    
+    req.on('error', (error) => {
+      reject(error);
+    });
+    
+    req.write(requestData);
+    req.end();
+  });
+}
+
+// Function to make STT request to OpenAI API
+async function makeSTTRequest(audioBuffer) {
+  return new Promise((resolve, reject) => {
+    if (!OPENAI_API_KEY) {
+      reject(new Error('OpenAI API key not set. Please set the OPENAI_API_KEY environment variable.'));
+      return;
+    }
+    
+    // Boundary for multipart form data
+    const boundary = `boundary_${Date.now().toString(16)}`;
+    
+    // Prepare form data parts
+    const formParts = [
+      `--${boundary}\r\n`,
+      'Content-Disposition: form-data; name="file"; filename="recording.webm"\r\n',
+      'Content-Type: audio/webm\r\n\r\n'
+    ];
+    
+    // Add file data and closing boundary
+    const dataParts = [
+      Buffer.from(formParts.join('')),
+      audioBuffer,
+      Buffer.from(`\r\n--${boundary}\r\n`),
+      Buffer.from('Content-Disposition: form-data; name="model"\r\n\r\n'),
+      Buffer.from('whisper-1\r\n'),
+      Buffer.from(`--${boundary}--\r\n`)
+    ];
+    
+    const requestBody = Buffer.concat(dataParts);
+    
+    const options = {
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/audio/transcriptions',
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Length': requestBody.length
+      }
+    };
+    
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        let errorData = '';
+        res.on('data', (chunk) => {
+          errorData += chunk;
+        });
+        res.on('end', () => {
+          reject(new Error(`OpenAI API returned ${res.statusCode}: ${errorData}`));
+        });
+        return;
+      }
+      
+      let responseData = '';
+      res.on('data', (chunk) => {
+        responseData += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const jsonResponse = JSON.parse(responseData);
+          resolve(jsonResponse);
+        } catch (error) {
+          reject(new Error(`Failed to parse API response: ${error.message}`));
+        }
+      });
+    });
+    
+    req.on('error', (error) => {
+      reject(error);
+    });
+    
+    req.write(requestBody);
+    req.end();
+  });
+}
 
 // POST /offer
 // Accepts JSON { sdp: "<offer.sdp>", model?: "<model>" }
@@ -233,6 +378,54 @@ app.post("/offer", async (req, res) => {
   }
 });
 
+// Text-to-speech endpoint
+app.post("/api/tts", async (req, res) => {
+  console.log("Received TTS request");
+  
+  try {
+    const { text, voice } = req.body;
+    
+    if (!text) {
+      return res.status(400).json({ error: 'No text provided' });
+    }
+    
+    console.log(`Processing TTS request for text: "${text}"`);
+    const audioBuffer = await makeTTSRequest(text, voice || 'alloy');
+    console.log(`TTS response received: ${audioBuffer.length} bytes of MP3 audio`);
+    
+    // Set proper headers for MP3 audio
+    res.writeHead(200, {
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': audioBuffer.length,
+      'Cache-Control': 'no-cache'
+    });
+    res.end(audioBuffer);
+  } catch (error) {
+    console.error('Error with TTS API:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Speech-to-text endpoint
+app.post("/api/stt", upload.single('file'), async (req, res) => {
+  console.log("Received STT request");
+  
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+    
+    console.log(`Processing STT request: ${req.file.buffer.length} bytes of audio data`);
+    const transcriptionResult = await makeSTTRequest(req.file.buffer);
+    console.log('STT response received:', transcriptionResult);
+    
+    res.status(200).json(transcriptionResult);
+  } catch (error) {
+    console.error('Error with STT API:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Optional: a lightweight health route & static serve of flutter web dev build folder
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
@@ -241,4 +434,6 @@ app.get("/", (req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on all interfaces on port ${PORT}`);
   console.log(`Server address: ${JSON.stringify(server.address())}`);
+  console.log(`TTS API available at: http://localhost:${PORT}/api/tts`);
+  console.log(`STT API available at: http://localhost:${PORT}/api/stt`);
 });
