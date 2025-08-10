@@ -1,0 +1,1 @@
+ C:\\Dev\\Chatroom5\\flutter_client\\build\\web\\manifest.json:  C:\\Dev\\Chatroom5\\flutter_client\\web\\index.html C:\\Dev\\Chatroom5\\flutter_client\\web\\manifest.json
