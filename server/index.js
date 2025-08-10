@@ -43,6 +43,122 @@ app.post("/offer", async (req, res) => {
     const offerSdp = req.body?.sdp;
     const model = req.body?.model || DEFAULT_MODEL;
     console.log("Using model:", model);
+    
+    // Check if the offer includes audio capabilities
+    if (offerSdp.includes("m=audio")) {
+      console.log("Offer includes audio capabilities");
+      
+      // Check the voice property being used
+      console.log("Using voice: alloy (default for TTS)");
+      
+      // Audio format checking
+      if (offerSdp.includes("opus/48000/2")) {
+        console.log("Client supports Opus codec at 48kHz stereo");
+      }
+      
+      // Detailed codec reporting for debugging
+      const codecMatch = offerSdp.match(/a=rtpmap:(\d+) ([a-zA-Z0-9/]+)/g);
+      if (codecMatch) {
+        console.log("Audio codecs found in offer:");
+        codecMatch.forEach(codec => console.log(` - ${codec}`));
+      }
+      
+      // Check for PCM-specific formats
+      if (offerSdp.includes("PCMA") || offerSdp.includes("PCMU")) {
+        console.log("Client supports PCM audio formats");
+      }
+      
+      // TTS voice config
+      console.log("TTS config: Using 'alloy' voice with 24kHz PCM16 mono output");
+      
+      // Debug hook for inspecting TTS messages
+      process.on('uncaughtException', (err) => {
+        console.error('Uncaught exception:', err);
+      });
+      
+      // Add WebSocket debug logging
+      const originalWebSocket = global.WebSocket;
+      if (originalWebSocket) {
+        console.log("Adding WebSocket debugging hooks");
+        class DebugWebSocket extends originalWebSocket {
+          constructor(...args) {
+            console.log("WebSocket created with:", args[0]);
+            super(...args);
+            
+            this.addEventListener('open', () => {
+              console.log("WebSocket CONNECTED");
+            });
+            
+            this.addEventListener('message', (event) => {
+              try {
+                if (typeof event.data === 'string') {
+                  const data = JSON.parse(event.data);
+                  console.log("WebSocket received message type:", data.type);
+                  
+                  // Check for TTS related messages
+                  if (data.type === 'conversation.item.create' || 
+                      data.type === 'audio.chunk' || 
+                      data.type.startsWith('transcript')) {
+                    console.log("TTS/Audio message:", data.type, data);
+                  }
+                } else {
+                  console.log("WebSocket received binary data", event.data.length);
+                }
+              } catch (e) {
+                console.log("WebSocket message (not JSON):", typeof event.data);
+              }
+            });
+            
+            this.addEventListener('close', (event) => {
+              console.log(`WebSocket CLOSED: code=${event.code}, reason=${event.reason}`);
+            });
+            
+            this.addEventListener('error', () => {
+              console.error("WebSocket ERROR");
+            });
+          }
+          
+          send(data) {
+            try {
+              if (typeof data === 'string') {
+                const parsed = JSON.parse(data);
+                if (parsed.type === 'conversation.item.create') {
+                  console.log("TTS REQUEST SENT:", JSON.stringify(parsed));
+                }
+              }
+            } catch (e) {
+              // Not JSON or other error
+            }
+            super.send(data);
+          }
+        }
+        
+        global.WebSocket = DebugWebSocket;
+      } else {
+        console.log("WebSocket not available globally");
+      }
+      
+      // Add interceptors for debugging WebRTC data
+      const originalFetch = global.fetch;
+      global.fetch = async function(...args) {
+        const url = args[0].toString();
+        if (url.includes('openai.com/v1/realtime')) {
+          console.log('Intercepted OpenAI Realtime API call');
+          try {
+            const response = await originalFetch(...args);
+            console.log('OpenAI Realtime API response status:', response.status);
+            return response;
+          } catch (error) {
+            console.error('Error in OpenAI Realtime API call:', error);
+            throw error;
+          }
+        } else {
+          return originalFetch(...args);
+        }
+      };
+    } else {
+      console.warn("WARNING: Offer does not include audio capabilities!");
+    }
 
     if (!offerSdp || typeof offerSdp !== "string") {
       return res.status(400).json({ error: "missing offer.sdp in body" });
@@ -122,6 +238,7 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on all interfaces on port ${PORT}`);
+  console.log(`Server address: ${JSON.stringify(server.address())}`);
 });
