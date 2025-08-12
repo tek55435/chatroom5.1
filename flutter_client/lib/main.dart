@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -43,6 +44,11 @@ class _HomePageState extends State<HomePage> {
   final nameController = TextEditingController(text: 'Guest');
   final inputController = TextEditingController();
   
+  // Log entries for the diagnostic panel
+  final List<String> diagnosticLogs = [];
+  final ScrollController diagnosticController = ScrollController(); 
+  bool showDiagnosticPanel = false;
+  
   // Audio recording variables for STT
   dynamic mediaRecorder;
   List<dynamic> audioChunks = [];
@@ -50,6 +56,62 @@ class _HomePageState extends State<HomePage> {
 
   bool joined = false;
   bool micOn = false;
+  
+  // Function to test audio output
+  void playTestSound() {
+    js.context.callMethod('eval', ['''
+      function playTestBeep() {
+        if (!window.audioContext) {
+          try {
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+            window.audioQueue = [];
+            window.isPlayingAudio = false;
+            console.log("Audio context created for test sound");
+            dartAppendTranscript("[audio] Audio system initialized for test");
+          } catch (err) {
+            console.error("Failed to create audio context:", err);
+            dartAppendTranscript("[error] Failed to initialize audio: " + err.message);
+            return;
+          }
+        }
+        
+        if (window.audioContext.state !== "running") {
+          window.audioContext.resume().then(() => {
+            console.log("Audio context resumed for test sound");
+            createAndPlayTestTone();
+          }).catch(err => {
+            console.error("Failed to resume audio context:", err);
+            dartAppendTranscript("[error] Failed to resume audio: " + err.message);
+          });
+        } else {
+          createAndPlayTestTone();
+        }
+        
+        function createAndPlayTestTone() {
+          // Create a simple beep sound
+          const oscillator = window.audioContext.createOscillator();
+          const gainNode = window.audioContext.createGain();
+          
+          oscillator.type = 'sine';
+          oscillator.frequency.value = 440; // 440 Hz - A note
+          oscillator.connect(gainNode);
+          gainNode.connect(window.audioContext.destination);
+          
+          // Start the tone
+          gainNode.gain.value = 0.5; // Set volume to 50%
+          oscillator.start();
+          
+          // Stop after 0.5 seconds
+          setTimeout(() => {
+            oscillator.stop();
+            dartAppendTranscript("[audio] Test sound played");
+          }, 500);
+        }
+      }
+      
+      playTestBeep();
+    ''']);
+  }
 
   @override
   void initState() {
@@ -66,6 +128,27 @@ class _HomePageState extends State<HomePage> {
         joined = true; 
       });
       appendTranscript('[system] Connection fully established and ready to use');
+      
+      // Explicitly initialize audio context when connection is established
+      js.context.callMethod('eval', ['''
+        if (!window.audioContext) {
+          try {
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+            window.audioQueue = [];
+            window.isPlayingAudio = false;
+            console.log("Audio context explicitly initialized after connection");
+            dartAppendTranscript("[audio] Audio system explicitly initialized");
+          } catch (err) {
+            console.error("Failed to initialize audio context:", err);
+            dartAppendTranscript("[error] Failed to initialize audio: " + err.message);
+          }
+        } else if (window.audioContext.state !== "running") {
+          window.audioContext.resume().then(() => {
+            console.log("Audio context explicitly resumed after connection");
+            dartAppendTranscript("[audio] Audio system resumed");
+          });
+        }
+      ''']);
     };
     
     // Make the server base URL available to JavaScript
@@ -632,29 +715,56 @@ class _HomePageState extends State<HomePage> {
             });
           }
         
-          // Format the TTS request according to OpenAI Realtime API docs
-          // For TTS to work properly in WebRTC sessions, we use a standard message with
-          // the text we want to convert to speech, but without any TTS-specific parameters
-          const ttsReq = {
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text: text
+          // Try DIRECT API call to server's TTS endpoint instead of using WebRTC data channel
+          // This bypasses the WebRTC data channel but still uses our server for TTS
+          try {
+            appendToTranscript("[debug] Trying direct TTS API call");
+            
+            // Call our server-side TTS API directly
+            fetch(`${window.SERVER_BASE}/api/tts`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: text, voice: 'alloy' })
+            })
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+              }
+              return response.arrayBuffer();
+            })
+            .then(audioData => {
+              appendToTranscript("[debug] Direct TTS API returned audio data");
+              
+              // Play the audio directly
+              const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              audioContext.decodeAudioData(audioData, 
+                buffer => {
+                  const source = audioContext.createBufferSource();
+                  source.buffer = buffer;
+                  source.connect(audioContext.destination);
+                  source.start(0);
+                  appendToTranscript("[audio] Playing TTS audio via direct API");
+                },
+                error => {
+                  console.error("Error decoding audio data:", error);
+                  appendToTranscript("[error] Failed to decode TTS audio");
                 }
-              ]
-              // No voice parameter - let the server use default (alloy)
-            }
-          };
+              );
+            })
+            .catch(error => {
+              console.error("TTS API error:", error);
+              appendToTranscript("[error] TTS API error: " + error.message);
+            });
+            
+            return true; // We're handling this asynchronously
+          } catch (apiError) {
+            console.error("Error calling TTS API:", apiError);
+            appendToTranscript("[error] Failed to call TTS API: " + apiError.message);
+          }
           
-          // Debug the request
-          console.log("Sending TTS request:", JSON.stringify(ttsReq));
-          
-          // Log the request for debugging
-          console.log("Sending TTS request:", JSON.stringify(ttsReq));
+          // Debug the request with more visibility
+          console.log("SENDING TTS REQUEST (EXPLICIT DEBUG):", JSON.stringify(ttsReq));
+          appendToTranscript("[debug] Sending TTS request: " + JSON.stringify(ttsReq));
           
           // Add a timestamp to track when we sent it (helpful for debugging)
           window.lastTTSRequestTime = Date.now();
@@ -839,6 +949,11 @@ class _HomePageState extends State<HomePage> {
 
   void appendTranscript(String s) {
     setState(() => transcriptLines.add(s));
+    
+    // Also add to diagnostic logs with timestamp
+    final timestamp = DateTime.now().toIso8601String();
+    appendDiagnostic("[$timestamp] $s");
+    
     // scroll after a tiny delay to allow list to update
     Future.delayed(const Duration(milliseconds: 50), () {
       if (transcriptController.hasClients) {
@@ -849,6 +964,135 @@ class _HomePageState extends State<HomePage> {
 
   void appendChat(String s) {
     setState(() => chatLines.add(s));
+  }
+  
+  void appendDiagnostic(String s) {
+    setState(() => diagnosticLogs.add(s));
+    // scroll after a tiny delay to allow list to update
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (diagnosticController.hasClients) {
+        diagnosticController.jumpTo(diagnosticController.position.maxScrollExtent);
+      }
+    });
+  }
+  
+  void copyDiagnosticLogs() {
+    final text = diagnosticLogs.join('\n');
+    Clipboard.setData(ClipboardData(text: text));
+    appendDiagnostic("[System] Logs copied to clipboard");
+  }
+  
+  void clearDiagnosticLogs() {
+    setState(() {
+      diagnosticLogs.clear();
+    });
+    appendDiagnostic("[System] Logs cleared");
+  }
+  
+  void toggleDiagnosticPanel() {
+    setState(() {
+      showDiagnosticPanel = !showDiagnosticPanel;
+    });
+    appendDiagnostic("[System] Diagnostic panel ${showDiagnosticPanel ? 'opened' : 'closed'}");
+  }
+  
+  void testAudioInitialization() {
+    appendDiagnostic("[Test] Testing audio initialization...");
+    js.context.callMethod('eval', ['''
+      try {
+        if (!window.audioContext) {
+          window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+          window.audioQueue = [];
+          window.isPlayingAudio = false;
+          dartAppendTranscript("[Test] Created new AudioContext: " + window.audioContext.state);
+        } else {
+          dartAppendTranscript("[Test] AudioContext already exists: " + window.audioContext.state);
+          if (window.audioContext.state !== "running") {
+            window.audioContext.resume().then(() => {
+              dartAppendTranscript("[Test] AudioContext resumed: " + window.audioContext.state);
+            }).catch(err => {
+              dartAppendTranscript("[Test] Failed to resume AudioContext: " + err.message);
+            });
+          }
+        }
+        
+        // Test creating an audio node
+        const testNode = window.audioContext.createGain();
+        dartAppendTranscript("[Test] Successfully created audio node");
+        
+        // Additional state info
+        dartAppendTranscript("[Test] Audio queue length: " + (window.audioQueue ? window.audioQueue.length : "undefined"));
+        dartAppendTranscript("[Test] isPlayingAudio: " + (window.isPlayingAudio ? "true" : "false"));
+      } catch (err) {
+        dartAppendTranscript("[Test] Audio initialization error: " + err.message);
+        console.error("Audio test error:", err);
+      }
+    ''']);
+  }
+  
+  void testWebRTCConnection() {
+    appendDiagnostic("[Test] Testing WebRTC connection...");
+    js.context.callMethod('eval', ['''
+      try {
+        if (!window.peerConnection) {
+          dartAppendTranscript("[Test] No WebRTC connection exists");
+          return;
+        }
+        
+        dartAppendTranscript("[Test] WebRTC connection state: " + window.peerConnection.connectionState);
+        dartAppendTranscript("[Test] ICE connection state: " + window.peerConnection.iceConnectionState);
+        dartAppendTranscript("[Test] Signaling state: " + window.peerConnection.signalingState);
+        
+        if (window.dataChannel) {
+          dartAppendTranscript("[Test] Data channel state: " + window.dataChannel.readyState);
+          
+          // Test sending a message through data channel
+          if (window.dataChannel.readyState === "open") {
+            try {
+              const testMsg = {type: "test_message", timestamp: new Date().toISOString()};
+              window.dataChannel.send(JSON.stringify(testMsg));
+              dartAppendTranscript("[Test] Test message sent through data channel");
+            } catch (sendErr) {
+              dartAppendTranscript("[Test] Failed to send test message: " + sendErr.message);
+            }
+          } else {
+            dartAppendTranscript("[Test] Data channel not open, can't send test message");
+          }
+        } else {
+          dartAppendTranscript("[Test] No data channel exists");
+        }
+      } catch (err) {
+        dartAppendTranscript("[Test] WebRTC test error: " + err.message);
+        console.error("WebRTC test error:", err);
+      }
+    ''']);
+  }
+  
+  void testTTSSystem() {
+    appendDiagnostic("[Test] Testing TTS functionality...");
+    final testText = "This is a test of the text to speech system";
+    
+    // First try WebRTC TTS
+    appendDiagnostic("[Test] Testing WebRTC TTS channel...");
+    js.context.callMethod('eval', ['''
+      try {
+        if (window.sendTTS && typeof window.sendTTS === "function") {
+          const result = window.sendTTS("${testText} via WebRTC");
+          dartAppendTranscript("[Test] WebRTC TTS send result: " + (result ? "success" : "failed"));
+        } else {
+          dartAppendTranscript("[Test] WebRTC TTS function not available");
+        }
+      } catch (err) {
+        dartAppendTranscript("[Test] WebRTC TTS test error: " + err.message);
+        console.error("WebRTC TTS test error:", err);
+      }
+    ''']);
+    
+    // Then try direct TTS
+    Future.delayed(const Duration(seconds: 2), () {
+      appendDiagnostic("[Test] Testing direct HTTP TTS...");
+      useDirectTTS("$testText via HTTP");
+    });
   }
 
   Future<void> joinSession() async {
@@ -1168,6 +1412,23 @@ class _HomePageState extends State<HomePage> {
                     tooltip: micOn ? 'Stop Microphone' : 'Start Microphone',
                     iconSize: 28,
                   ),
+                const SizedBox(width: 16),
+                if (joined)
+                  IconButton(
+                    icon: const Icon(Icons.volume_up),
+                    onPressed: playTestSound,
+                    color: Colors.blue,
+                    tooltip: 'Test Audio',
+                    iconSize: 28,
+                  ),
+                const SizedBox(width: 16),
+                IconButton(
+                  icon: const Icon(Icons.build),
+                  onPressed: toggleDiagnosticPanel,
+                  color: showDiagnosticPanel ? Colors.green : Colors.grey,
+                  tooltip: 'Toggle Test Panel',
+                  iconSize: 28,
+                ),
               ],
             ),
           ),
@@ -1353,6 +1614,144 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
+          // Test panel
+          if (showDiagnosticPanel)
+            Container(
+              height: 300,
+              padding: const EdgeInsets.all(16),
+              color: Colors.grey[200],
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.green[700],
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'Diagnostic Test Panel',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: clearDiagnosticLogs,
+                            icon: const Icon(Icons.clear_all),
+                            label: const Text('Clear Logs'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: copyDiagnosticLogs,
+                            icon: const Icon(Icons.copy),
+                            label: const Text('Copy Logs'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: testAudioInitialization,
+                        icon: const Icon(Icons.speaker),
+                        label: const Text('Test Audio Init'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: testWebRTCConnection,
+                        icon: const Icon(Icons.connect_without_contact),
+                        label: const Text('Test WebRTC'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.indigo,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: testTTSSystem,
+                        icon: const Icon(Icons.record_voice_over),
+                        label: const Text('Test TTS'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.teal,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        onPressed: playTestSound,
+                        icon: const Icon(Icons.volume_up),
+                        label: const Text('Test Sound'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: ListView.builder(
+                        controller: diagnosticController,
+                        itemCount: diagnosticLogs.length,
+                        itemBuilder: (context, index) {
+                          final log = diagnosticLogs[index];
+                          Color textColor = Colors.white;
+                          if (log.contains("[Test]")) {
+                            textColor = Colors.yellow;
+                          } else if (log.contains("[error]")) {
+                            textColor = Colors.red;
+                          } else if (log.contains("[audio]")) {
+                            textColor = Colors.cyan;
+                          } else if (log.contains("[system]") || log.contains("[System]")) {
+                            textColor = Colors.green;
+                          }
+                          
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Text(
+                              log,
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                                color: textColor,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
