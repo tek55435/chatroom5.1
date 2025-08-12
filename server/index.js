@@ -7,10 +7,11 @@ import dotenv from "dotenv";
 import https from "https";
 import multer from "multer";
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Explicitly configure dotenv to use the server/.env file
+dotenv.config({ path: path.join(__dirname, ".env") });
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
@@ -99,7 +100,7 @@ async function makeTTSRequest(text, voice = 'alloy') {
 }
 
 // Function to make STT request to OpenAI API
-async function makeSTTRequest(audioBuffer) {
+async function makeSTTRequest(audioBuffer, mimetype = 'audio/webm', filename = 'recording.webm', { language = 'en', temperature = 0, prompt } = {}) {
   return new Promise((resolve, reject) => {
     if (!OPENAI_API_KEY) {
       reject(new Error('OpenAI API key not set. Please set the OPENAI_API_KEY environment variable.'));
@@ -112,21 +113,37 @@ async function makeSTTRequest(audioBuffer) {
     // Prepare form data parts
     const formParts = [
       `--${boundary}\r\n`,
-      'Content-Disposition: form-data; name="file"; filename="recording.webm"\r\n',
-      'Content-Type: audio/webm\r\n\r\n'
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`,
+      `Content-Type: ${mimetype}\r\n\r\n`
     ];
     
     // Add file data and closing boundary
-    const dataParts = [
-      Buffer.from(formParts.join('')),
-      audioBuffer,
-      Buffer.from(`\r\n--${boundary}\r\n`),
-      Buffer.from('Content-Disposition: form-data; name="model"\r\n\r\n'),
-      Buffer.from('whisper-1\r\n'),
-      Buffer.from(`--${boundary}--\r\n`)
-    ];
-    
-    const requestBody = Buffer.concat(dataParts);
+    const parts = [];
+    parts.push(Buffer.from(formParts.join('')));
+    parts.push(audioBuffer);
+    // model
+    parts.push(Buffer.from(`\r\n--${boundary}\r\n`));
+    parts.push(Buffer.from('Content-Disposition: form-data; name="model"\r\n\r\n'));
+    parts.push(Buffer.from('whisper-1\r\n'));
+    // language
+    if (language) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="language"\r\n\r\n'));
+      parts.push(Buffer.from(String(language) + '\r\n'));
+    }
+    // temperature
+    parts.push(Buffer.from(`--${boundary}\r\n`));
+    parts.push(Buffer.from('Content-Disposition: form-data; name="temperature"\r\n\r\n'));
+    parts.push(Buffer.from(String(temperature) + '\r\n'));
+    // prompt (optional)
+    if (prompt) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="prompt"\r\n\r\n'));
+      parts.push(Buffer.from(String(prompt) + '\r\n'));
+    }
+    // closing
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const requestBody = Buffer.concat(parts);
     
     const options = {
       hostname: 'api.openai.com',
@@ -243,6 +260,7 @@ app.post("/offer", async (req, res) => {
                   // Check for TTS related messages
                   if (data.type === 'conversation.item.create' || 
                       data.type === 'audio.chunk' || 
+                      data.type === 'tts.request' ||  // Add explicit TTS request type
                       data.type.startsWith('transcript')) {
                     console.log("TTS/Audio message:", data.type, data);
                   }
@@ -263,12 +281,57 @@ app.post("/offer", async (req, res) => {
             });
           }
           
-          send(data) {
+          async send(data) {
             try {
               if (typeof data === 'string') {
                 const parsed = JSON.parse(data);
+                // Handle different types of messages
                 if (parsed.type === 'conversation.item.create') {
-                  console.log("TTS REQUEST SENT:", JSON.stringify(parsed));
+                  console.log("Conversation message sent:", JSON.stringify(parsed));
+                }
+                
+                // Handle explicit TTS request
+                if (parsed.type === 'tts.request') {
+                  console.log("!!! EXPLICIT TTS REQUEST RECEIVED !!!:", JSON.stringify(parsed));
+                  
+                  // Extract text and voice
+                  const text = parsed.text || "";
+                  const voice = parsed.voice || "alloy";
+                  
+                  if (text) {
+                    // Generate TTS audio
+                    try {
+                      const audioBuffer = await makeTTSRequest(text, voice);
+                      console.log(`Generated TTS audio: ${audioBuffer.length} bytes`);
+                      
+                      // Convert to base64
+                      const base64Audio = audioBuffer.toString('base64');
+                      
+                      // Send audio chunk response
+                      const response = {
+                        type: 'audio.chunk',
+                        chunk: {
+                          bytes: base64Audio,
+                          format: 'mp3'
+                        }
+                      };
+                      
+                      // Send the audio back through the WebSocket
+                      super.send(JSON.stringify(response));
+                      console.log("TTS response sent with audio chunk");
+                    } catch (error) {
+                      console.error("Error generating TTS:", error);
+                      // Send error message
+                      const errorMsg = {
+                        type: 'error',
+                        message: 'Failed to generate speech'
+                      };
+                      super.send(JSON.stringify(errorMsg));
+                    }
+                    
+                    // Don't forward tts.request messages to OpenAI
+                    return;
+                  }
                 }
               }
             } catch (e) {
@@ -415,8 +478,15 @@ app.post("/api/stt", upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No audio file provided' });
     }
     
-    console.log(`Processing STT request: ${req.file.buffer.length} bytes of audio data`);
-    const transcriptionResult = await makeSTTRequest(req.file.buffer);
+  console.log(`Processing STT request: ${req.file.buffer.length} bytes of audio data`);
+  const mimetype = req.file.mimetype || 'application/octet-stream';
+  const originalname = req.file.originalname || 'recording.webm';
+  console.log('Client upload mimetype:', mimetype, 'filename:', originalname);
+  const language = (req.body && req.body.language) || 'en';
+  const temperature = (req.body && req.body.temperature) || 0;
+  const prompt = (req.body && req.body.prompt) || undefined;
+  console.log('STT options => language:', language, 'temperature:', temperature, 'prompt:', prompt ? '[provided]' : 'none');
+  const transcriptionResult = await makeSTTRequest(req.file.buffer, mimetype, originalname, { language, temperature, prompt });
     console.log('STT response received:', transcriptionResult);
     
     res.status(200).json(transcriptionResult);
