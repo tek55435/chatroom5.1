@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
+import 'dart:js_util' as js_util;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -51,8 +52,103 @@ class _HomePageState extends State<HomePage> {
   
   // Audio recording variables for STT
   dynamic mediaRecorder;
+  dynamic simpleRecorder; // JS-based fallback recorder
+  bool useSimpleRecorder = false;
+  dynamic fallbackBlob; // Blob from fallback recorder
+
+  // Injects a minimal JS recorder into the page if not present yet.
+  void _ensureSimpleRecorderInjected() {
+    final has = js_util.hasProperty(html.window, 'SimpleRecorder');
+    if (has) return;
+  final script = html.ScriptElement()
+      ..type = 'text/javascript'
+      ..text = r'''
+(function(){
+  if (window.SimpleRecorder) return;
+  function SimpleRecorder(){
+    this.audioContext = null;
+    this.mediaStream = null;
+    this.processor = null;
+    this.bufferL = [];
+    this.bufferR = [];
+    this.length = 0;
+    this.blob = null;
+  }
+  SimpleRecorder.prototype.start = async function(){
+    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    this.mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+  const bufferSize = 4096;
+  const channels = 1; // mono for clearer STT
+  this.processor = this.audioContext.createScriptProcessor(bufferSize, channels, channels);
+    this.bufferL = [];
+    this.bufferR = [];
+    this.length = 0;
+    this.processor.onaudioprocess = (e)=>{
+  const inL = e.inputBuffer.getChannelData(0);
+  this.bufferL.push(new Float32Array(inL));
+  this.length += inL.length;
+    };
+    source.connect(this.processor);
+    this.processor.connect(this.audioContext.destination);
+  };
+  SimpleRecorder.prototype.stop = async function(){
+    if (this.processor){ this.processor.disconnect(); }
+    if (this.mediaStream){ this.mediaStream.getTracks().forEach(t=>t.stop()); }
+  const left = mergeBuffers(this.bufferL, this.length);
+  const wav = encodeWAVMono(left, this.audioContext.sampleRate);
+    this.blob = new Blob([wav], {type:'audio/wav'});
+    return this.blob;
+  };
+
+  function mergeBuffers(buffers, len){
+    const result = new Float32Array(len);
+    let offset = 0;
+    for (let i=0;i<buffers.length;i++){
+      result.set(buffers[i], offset);
+      offset += buffers[i].length;
+    }
+    return result;
+  }
+  function floatTo16BitPCM(output, offset, input){
+    for (let i = 0; i < input.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, input[i]));
+      s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      output.setInt16(offset, s, true);
+    }
+  }
+  function writeString(view, offset, string){
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+  function encodeWAVMono(samples, sampleRate){
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    floatTo16BitPCM(view, 44, samples);
+    return view;
+  }
+  window.SimpleRecorder = SimpleRecorder;
+})();
+''';
+    html.document.head!.append(script);
+  }
   List<dynamic> audioChunks = [];
   bool isRecording = false;
+  bool isTranscribing = false;
 
   bool joined = false;
   bool micOn = false;
@@ -1234,52 +1330,131 @@ class _HomePageState extends State<HomePage> {
   }
   
   // Function to start recording audio for STT
-  void startRecording() {
+  void startRecording() async {
+    appendTranscript('[info] Starting audio recording for STT...');
     try {
-      appendTranscript('[info] Starting audio recording for STT...');
-      
-      final constraints = js.JsObject.jsify({
-        'audio': true,
-        'video': false
-      });
-      
-      js.context['navigator']['mediaDevices'].callMethod('getUserMedia', [constraints])
-        .then((stream) {
-          mediaRecorder = js.context['MediaRecorder'].construct(stream);
-          audioChunks = [];
-          
-          js.context.callMethod('eval', ['''
-            (function(recorder) {
-              recorder.addEventListener('dataavailable', function(event) {
-                window.dartAudioChunkAvailable(event.data);
-              });
-              
-              recorder.addEventListener('stop', function() {
-                window.dartRecordingComplete();
-              });
-            })(arguments[0]);
-          '''])(mediaRecorder);
-          
-          // Set up callbacks from JavaScript to Dart
-          js.context['dartAudioChunkAvailable'] = (dynamic chunk) {
-            audioChunks.add(chunk);
-          };
-          
-          js.context['dartRecordingComplete'] = () {
-            convertSpeechToText();
-          };
-          
-          mediaRecorder.callMethod('start', []);
-          setState(() {
-            isRecording = true;
-          });
-          
-          appendTranscript('[info] Recording started. Speak now...');
+  // Environment diagnostics
+  final isSecure = js_util.getProperty(html.window, 'isSecureContext') == true;
+  appendTranscript('[diag] isSecureContext=$isSecure');
+  appendTranscript('[diag] navigator present=true');
+
+      // Prefer using dart:html typed API to obtain a MediaStream (avoids JS Promise interop pitfalls)
+      html.MediaStream? htmlStream;
+      try {
+        htmlStream = await html.window.navigator.mediaDevices
+            ?.getUserMedia({'audio': true});
+      } catch (e) {
+        appendTranscript('[warn] getUserMedia via dart:html failed: $e; attempting JS fallback');
+      }
+
+      dynamic stream = htmlStream;
+      if (stream == null) {
+        // JS fallback
+        final constraints = js_util.jsify({'audio': true, 'video': false});
+        final navigatorObj = js_util.getProperty(js.context, 'navigator');
+        if (navigatorObj == null) {
+          appendTranscript('[error] Navigator is not available in this context');
+          return;
+        }
+        final mediaDevices = js_util.getProperty(navigatorObj, 'mediaDevices');
+        if (mediaDevices == null) {
+          appendTranscript('[error] mediaDevices not available (insecure context?)');
+          return;
+        }
+        final jsGetUM = js_util.getProperty(mediaDevices, 'getUserMedia');
+        final isFunc = js_util.instanceof(jsGetUM, js.context['Function']);
+        if (!isFunc) {
+          appendTranscript('[error] mediaDevices.getUserMedia is not a function');
+          return;
+        }
+        final promise = js_util.callMethod(mediaDevices, 'getUserMedia', [constraints]);
+        // Some environments may return non-Promise; guard by checking for a 'then' property
+        if (promise != null && js_util.hasProperty(promise, 'then')) {
+          stream = await js_util.promiseToFuture<dynamic>(promise);
+        } else {
+          appendTranscript('[error] getUserMedia did not return a Promise; cannot proceed');
+          return;
+        }
+      }
+
+      // Check MediaRecorder support via window object (more reliable)
+  final mediaRecorderCtor = js_util.getProperty(html.window, 'MediaRecorder');
+  appendTranscript('[diag] typeof MediaRecorder=' + (mediaRecorderCtor == null ? 'null' : 'function'));
+      if (mediaRecorderCtor == null) {
+        // Inject and use a JS fallback recorder (ScriptProcessor → WAV)
+        _ensureSimpleRecorderInjected();
+        final ctor = js_util.getProperty(html.window, 'SimpleRecorder');
+        if (ctor == null) {
+          appendTranscript('[error] Fallback recorder injection failed');
+          return;
+        }
+        simpleRecorder = js_util.callConstructor(ctor, const []);
+        try {
+          final startPromise = js_util.callMethod(simpleRecorder, 'start', const []);
+          if (startPromise != null && js_util.hasProperty(startPromise, 'then')) {
+            await js_util.promiseToFuture(startPromise);
+          }
+          useSimpleRecorder = true;
+          fallbackBlob = null;
+          setState(() { isRecording = true; });
+          appendTranscript('[info] Fallback recording started. Speak now...');
+          return; // Skip MediaRecorder path
+        } catch (e) {
+          appendTranscript('[error] Failed to start fallback recorder: $e');
+          return;
+        }
+      }
+
+      // Choose a supported mimeType if available
+  String? chosenType;
+      try {
+        final isTypeSupported = js_util.getProperty(mediaRecorderCtor, 'isTypeSupported');
+        if (isTypeSupported != null) {
+          bool supports(String t) => js_util.callMethod<bool>(mediaRecorderCtor, 'isTypeSupported', [t]) == true;
+          if (supports('audio/webm;codecs=opus')) {
+            chosenType = 'audio/webm;codecs=opus';
+          } else if (supports('audio/webm')) {
+            chosenType = 'audio/webm';
+          }
+        }
+      } catch (_) {}
+
+  appendTranscript('[diag] chosen mimeType=' + (chosenType ?? 'default'));
+
+      // Create MediaRecorder(stream)
+      try {
+        if (chosenType != null) {
+          final options = js_util.jsify({'mimeType': chosenType});
+          mediaRecorder = js_util.callConstructor(mediaRecorderCtor, [stream, options]);
+        } else {
+          mediaRecorder = js_util.callConstructor(mediaRecorderCtor, [stream]);
+        }
+      } catch (e) {
+        appendTranscript('[error] Failed to construct MediaRecorder: $e');
+        return;
+      }
+      audioChunks = [];
+
+      // Wire up events using allowInterop
+      js_util.callMethod(mediaRecorder, 'addEventListener', [
+        'dataavailable',
+        js.allowInterop((event) {
+          final data = js_util.getProperty(event, 'data');
+          if (data != null) audioChunks.add(data);
         })
-        .catchError((error) {
-          appendTranscript('[error] Failed to start recording: $error');
-          print('Error accessing microphone: $error');
-        });
+      ]);
+
+      js_util.callMethod(mediaRecorder, 'addEventListener', [
+        'stop',
+        js.allowInterop((_) {
+          convertSpeechToText();
+        })
+      ]);
+
+      // Start recording
+      js_util.callMethod(mediaRecorder, 'start', const []);
+      setState(() { isRecording = true; });
+      appendTranscript('[info] Recording started. Speak now...');
     } catch (e) {
       appendTranscript('[error] Exception starting recording: $e');
       print('Error starting recording: $e');
@@ -1288,12 +1463,37 @@ class _HomePageState extends State<HomePage> {
   
   // Function to stop recording
   void stopRecording() {
+    if (useSimpleRecorder && simpleRecorder != null) {
+      appendTranscript('[info] Stopping fallback recorder...');
+      try {
+        final stopPromise = js_util.callMethod(simpleRecorder, 'stop', const []);
+        if (stopPromise != null && js_util.hasProperty(stopPromise, 'then')) {
+          js_util.promiseToFuture(stopPromise).then((value) {
+            fallbackBlob = value;
+            setState(() { isRecording = false; });
+            convertSpeechToText();
+          });
+        } else {
+          // If no promise, attempt to read a blob property
+          fallbackBlob = js_util.getProperty(simpleRecorder, 'blob');
+          setState(() { isRecording = false; });
+          convertSpeechToText();
+        }
+      } catch (e) {
+        appendTranscript('[error] Failed to stop fallback recorder: $e');
+        setState(() { isRecording = false; });
+      }
+      return;
+    }
     if (mediaRecorder != null) {
       appendTranscript('[info] Stopping recording...');
-      mediaRecorder.callMethod('stop', []);
-      setState(() {
-        isRecording = false;
-      });
+      try {
+        js_util.callMethod(mediaRecorder, 'stop', const []);
+      } catch (_) {
+        // Fallback to direct callMethod if needed
+        mediaRecorder.callMethod('stop', []);
+      }
+      setState(() { isRecording = false; });
     }
   }
   
@@ -1301,14 +1501,29 @@ class _HomePageState extends State<HomePage> {
   Future<void> convertSpeechToText() async {
     try {
       appendTranscript('[info] Converting speech to text...');
+      setState(() { isTranscribing = true; });
+      if (!useSimpleRecorder && audioChunks.isEmpty) {
+        appendTranscript('[error] No audio captured. Please record again.');
+        setState(() { isTranscribing = false; });
+        return;
+      }
       
-      // Create a Blob from audio chunks
-      final options = js.JsObject.jsify({'type': 'audio/webm'});
-      final blob = js.context['Blob'].construct(js.JsArray.from(audioChunks), options);
+      // Choose a Blob to upload: prefer fallback blob, else first recorded chunk
+      dynamic blob = fallbackBlob;
+      if (blob == null && audioChunks.isNotEmpty) {
+        blob = audioChunks.first; // MediaRecorder provides Blob in event.data
+      }
+      if (blob == null) {
+        appendTranscript('[error] No audio blob available to upload');
+        setState(() { isTranscribing = false; });
+        return;
+      }
       
       // Create FormData
-      final formData = js.context['FormData'].construct();
-      formData.callMethod('append', ['audio', blob, 'recording.webm']);
+  // Build FormData using dart:html and append via JS interop (works for JS Blob types)
+  final formData = html.FormData();
+  final fileName = useSimpleRecorder ? 'recording.wav' : 'recording.webm';
+  js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
       // Create XMLHttpRequest to handle the upload
       final xhr = html.HttpRequest();
@@ -1330,12 +1545,14 @@ class _HomePageState extends State<HomePage> {
           appendTranscript('[error] STT API error: ${xhr.status}');
           print('STT API error response: ${xhr.responseText}');
         }
+  setState(() { isTranscribing = false; });
       });
       
       // Set up error handler
       xhr.onError.listen((event) {
         appendTranscript('[error] STT API network error');
         print('STT API network error: $event');
+  setState(() { isTranscribing = false; });
       });
       
       // Send the request
@@ -1343,6 +1560,7 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       appendTranscript('[error] Exception converting speech to text: $e');
       print('Error with STT API: $e');
+  setState(() { isTranscribing = false; });
     }
   }
 
@@ -1604,6 +1822,26 @@ class _HomePageState extends State<HomePage> {
                                   ),
                                 ],
                               ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  if (isRecording) ...[
+                                    const Icon(Icons.fiber_manual_record, color: Colors.red, size: 16),
+                                    const SizedBox(width: 6),
+                                    Text('Recording…', style: TextStyle(color: Colors.red[700])),
+                                  ],
+                                  if (isTranscribing) ...[
+                                    const SizedBox(width: 12),
+                                    const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    const Text('Transcribing…'),
+                                  ],
+                                ],
+                              ),
                             ],
                           ),
                         ),
@@ -1667,7 +1905,9 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       ElevatedButton.icon(
                         onPressed: testAudioInitialization,
@@ -1678,7 +1918,6 @@ class _HomePageState extends State<HomePage> {
                           foregroundColor: Colors.white,
                         ),
                       ),
-                      const SizedBox(width: 8),
                       ElevatedButton.icon(
                         onPressed: testWebRTCConnection,
                         icon: const Icon(Icons.connect_without_contact),
@@ -1688,7 +1927,6 @@ class _HomePageState extends State<HomePage> {
                           foregroundColor: Colors.white,
                         ),
                       ),
-                      const SizedBox(width: 8),
                       ElevatedButton.icon(
                         onPressed: testTTSSystem,
                         icon: const Icon(Icons.record_voice_over),
@@ -1698,13 +1936,32 @@ class _HomePageState extends State<HomePage> {
                           foregroundColor: Colors.white,
                         ),
                       ),
-                      const SizedBox(width: 8),
                       ElevatedButton.icon(
                         onPressed: playTestSound,
                         icon: const Icon(Icons.volume_up),
                         label: const Text('Test Sound'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      // New: Start STT
+                      ElevatedButton.icon(
+                        onPressed: isRecording ? null : startRecording,
+                        icon: const Icon(Icons.mic),
+                        label: const Text('Start STT'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      // New: Stop STT
+                      ElevatedButton.icon(
+                        onPressed: isRecording ? stopRecording : null,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Stop STT'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
                           foregroundColor: Colors.white,
                         ),
                       ),
