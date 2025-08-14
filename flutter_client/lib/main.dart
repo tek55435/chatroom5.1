@@ -49,6 +49,7 @@ class _HomePageState extends State<HomePage> {
   final List<String> diagnosticLogs = [];
   final ScrollController diagnosticController = ScrollController(); 
   bool showDiagnosticPanel = false;
+  String connectionStatus = "Disconnected";
   
   // Audio recording variables for STT
   dynamic mediaRecorder;
@@ -1573,274 +1574,160 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  // --- UI Helpers ---
+  Widget _buildTranscriptView() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      color: Colors.black87,
+      child: ListView.builder(
+        controller: transcriptController,
+        itemCount: transcriptLines.length,
+        itemBuilder: (context, index) {
+          final line = transcriptLines[index];
+          Color color = Colors.white;
+          if (line.contains('[system]')) color = Colors.cyan;
+          else if (line.contains('[error]')) color = Colors.redAccent;
+          else if (line.contains('(You)')) color = Colors.lightGreenAccent;
+          else if (line.contains('[AI]')) color = Colors.lightBlueAccent;
+          else if (line.contains('[info]')) color = Colors.grey;
+          else if (line.contains('[debug]')) color = Colors.yellow;
+
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2.0),
+            child: Text(line, style: TextStyle(color: color, fontFamily: 'monospace', fontSize: 12)),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildDiagnosticLogView() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      color: Colors.black87,
+      child: ListView.builder(
+        controller: diagnosticController,
+        itemCount: diagnosticLogs.length,
+        itemBuilder: (context, index) {
+          final log = diagnosticLogs[index];
+          Color textColor = Colors.grey[400]!;
+          if (log.contains("[Test]")) textColor = Colors.yellow;
+          else if (log.contains("[error]")) textColor = Colors.redAccent;
+          else if (log.contains("[audio]")) textColor = Colors.cyanAccent;
+          else if (log.contains("[system]") || log.contains("[System]")) textColor = Colors.greenAccent;
+
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text(log, style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: textColor)),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Chatroom with WebRTC'),
-        backgroundColor: Colors.blue[700],
+        title: const Text('Realtime Voice Chat'),
+        backgroundColor: Colors.blueGrey[900],
+        actions: [
+          Center(child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Text(
+              joined ? 'Connected' : 'Disconnected',
+              style: TextStyle(fontSize: 16, color: joined ? Colors.greenAccent : Colors.orangeAccent),
+            ),
+          )),
+          if (!joined)
+            TextButton.icon(
+              icon: const Icon(Icons.login, color: Colors.white),
+              label: const Text('Join', style: TextStyle(color: Colors.white)),
+              onPressed: joinSession,
+            )
+          else
+            TextButton.icon(
+              icon: const Icon(Icons.logout, color: Colors.white),
+              label: const Text('Leave', style: TextStyle(color: Colors.white)),
+              onPressed: leaveSession,
+            ),
+          const SizedBox(width: 10),
+          IconButton(
+            icon: Icon(micOn ? Icons.mic : Icons.mic_off),
+            onPressed: joined ? (micOn ? stopMic : startMic) : null,
+            color: micOn ? Colors.redAccent : Colors.white,
+            tooltip: 'Toggle Microphone',
+          ),
+          IconButton(
+            icon: const Icon(Icons.build_circle_outlined),
+            onPressed: toggleDiagnosticPanel,
+            color: showDiagnosticPanel ? Colors.cyanAccent : Colors.white,
+            tooltip: 'Toggle Diagnostic Panel',
+          ),
+          const SizedBox(width: 10),
+        ],
       ),
       body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: Colors.grey[200],
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: roomController,
-                    decoration: const InputDecoration(
-                      labelText: 'Room ID',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: TextField(
-                    controller: nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Your Name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                if (!joined)
-                  ElevatedButton(
-                    onPressed: joinSession,
-                    child: const Text('Join'),
-                  )
-                else
-                  ElevatedButton(
-                    onPressed: leaveSession,
-                    style: ElevatedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      backgroundColor: Colors.red,
-                    ),
-                    child: const Text('Leave'),
-                  ),
-                const SizedBox(width: 16),
-                if (joined)
-                  IconButton(
-                    icon: Icon(micOn ? Icons.mic : Icons.mic_off),
-                    onPressed: micOn ? stopMic : startMic,
-                    color: micOn ? Colors.red : Colors.grey,
-                    tooltip: micOn ? 'Stop Microphone' : 'Start Microphone',
-                    iconSize: 28,
-                  ),
-                const SizedBox(width: 16),
-                if (joined)
-                  IconButton(
-                    icon: const Icon(Icons.volume_up),
-                    onPressed: playTestSound,
-                    color: Colors.blue,
-                    tooltip: 'Test Audio',
-                    iconSize: 28,
-                  ),
-                const SizedBox(width: 16),
-                IconButton(
-                  icon: const Icon(Icons.build),
-                  onPressed: toggleDiagnosticPanel,
-                  color: showDiagnosticPanel ? Colors.green : Colors.grey,
-                  tooltip: 'Toggle Test Panel',
-                  iconSize: 28,
-                ),
-              ],
-            ),
-          ),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Transcript area
                 Expanded(
-                  flex: 2,
+                  flex: 3,
                   child: Container(
                     padding: const EdgeInsets.all(16),
                     color: Colors.grey[100],
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.blue[700],
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'Transcript',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: ListView.builder(
-                            controller: transcriptController,
-                            itemCount: transcriptLines.length,
-                            itemBuilder: (context, index) {
-                              final line = transcriptLines[index];
-                              final isAI = line.startsWith('[AI]');
-                              final isEvent = line.startsWith('[event]');
-                              final isRaw = line.startsWith('[raw]');
-                              final isSystem = !isAI && !line.startsWith('(You)');
-                              
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 4),
-                                child: Text(
-                                  line,
-                                  style: TextStyle(
-                                    fontWeight: isAI ? FontWeight.bold : FontWeight.normal,
-                                    color: isAI 
-                                      ? Colors.blue[800] 
-                                      : isEvent 
-                                        ? Colors.purple 
-                                        : isRaw 
-                                          ? Colors.orange[800]
-                                          : isSystem 
-                                            ? Colors.grey[600]
-                                            : Colors.black,
-                                    fontSize: isAI ? 16 : 14,
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                // Chat area
-                Expanded(
-                  flex: 1,
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    color: Colors.grey[300],
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.blue[700],
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'Text Chat',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
+                        Text('Conversation', style: Theme.of(context).textTheme.headlineSmall),
+                        const Divider(height: 20),
                         Expanded(
                           child: ListView.builder(
                             itemCount: chatLines.length,
                             itemBuilder: (context, index) {
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 4),
-                                child: Text(chatLines[index]),
+                              return Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 3)],
+                                ),
+                                child: Text(chatLines[index], style: const TextStyle(fontSize: 16)),
                               );
                             },
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 10),
                         Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: Colors.blue[50],
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blue.shade200),
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blue.shade100),
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                          child: Row(
                             children: [
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Text(
-                                  'Text-to-Speech Input',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.blue[700],
-                                  ),
+                              Expanded(
+                                child: TextField(
+                                  controller: inputController,
+                                  decoration: const InputDecoration.collapsed(hintText: 'Type a message to send as TTS...'),
+                                  onSubmitted: (_) => sendTypedAsTTS(),
                                 ),
                               ),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: inputController,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Type message for AI to speak',
-                                        border: OutlineInputBorder(),
-                                        hintText: 'Enter text to be spoken by AI',
-                                        filled: true,
-                                        fillColor: Colors.white,
-                                      ),
-                                      onSubmitted: (_) => sendTypedAsTTS(),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: const Icon(Icons.volume_up),
-                                    onPressed: sendTypedAsTTS,
-                                    tooltip: 'Send as TTS via WebRTC',
-                                    color: Colors.blue[700],
-                                    iconSize: 30,
-                                    padding: const EdgeInsets.all(8),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: const Icon(Icons.record_voice_over),
-                                    onPressed: () {
-                                      final text = inputController.text.trim();
-                                      if (text.isNotEmpty) {
-                                        useDirectTTS(text);
-                                      }
-                                    },
-                                    tooltip: 'Direct TTS API',
-                                    color: Colors.green[700],
-                                    iconSize: 30,
-                                    padding: const EdgeInsets.all(8),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: Icon(isRecording ? Icons.stop : Icons.mic),
-                                    onPressed: isRecording ? stopRecording : startRecording,
-                                    tooltip: isRecording ? 'Stop Recording' : 'Start Speech-to-Text',
-                                    color: isRecording ? Colors.red : Colors.blue[700],
-                                    iconSize: 30,
-                                    padding: const EdgeInsets.all(8),
-                                  ),
-                                ],
+                              IconButton(
+                                icon: const Icon(Icons.send, color: Colors.blue),
+                                onPressed: sendTypedAsTTS,
+                                tooltip: 'Send as Text-to-Speech',
                               ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  if (isRecording) ...[
-                                    const Icon(Icons.fiber_manual_record, color: Colors.red, size: 16),
-                                    const SizedBox(width: 6),
-                                    Text('Recording…', style: TextStyle(color: Colors.red[700])),
-                                  ],
-                                  if (isTranscribing) ...[
-                                    const SizedBox(width: 12),
-                                    const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    const Text('Transcribing…'),
-                                  ],
-                                ],
+                              IconButton(
+                                icon: Icon(isRecording ? Icons.stop_circle : Icons.mic),
+                                onPressed: isRecording ? stopRecording : startRecording,
+                                tooltip: isRecording ? 'Stop Recording' : 'Start STT Recording',
+                                color: isRecording ? Colors.red : Colors.blue,
+                                iconSize: 28,
                               ),
                             ],
                           ),
@@ -1852,161 +1739,62 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-          // Test panel
           if (showDiagnosticPanel)
             Container(
-              height: 300,
-              padding: const EdgeInsets.all(16),
-              color: Colors.grey[200],
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.green[700],
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'Diagnostic Test Panel',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      Row(
+              height: 350,
+              color: Colors.blueGrey[800],
+              child: DefaultTabController(
+                length: 2,
+                child: Column(
+                  children: [
+                    Container(
+                      color: Colors.blueGrey[900],
+                      child: Row(
                         children: [
-                          ElevatedButton.icon(
-                            onPressed: clearDiagnosticLogs,
-                            icon: const Icon(Icons.clear_all),
-                            label: const Text('Clear Logs'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.orange,
-                              foregroundColor: Colors.white,
+                          const Expanded(
+                            child: TabBar(
+                              tabs: [
+                                Tab(icon: Icon(Icons.bug_report), text: "Logs"),
+                                Tab(icon: Icon(Icons.article), text: "Transcript"),
+                              ],
+                              indicatorColor: Colors.lightBlueAccent,
+                              labelColor: Colors.white,
+                              unselectedLabelColor: Colors.grey,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            onPressed: copyDiagnosticLogs,
-                            icon: const Icon(Icons.copy),
-                            label: const Text('Copy Logs'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue,
-                              foregroundColor: Colors.white,
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                            child: Wrap(
+                              spacing: 4,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.copy, size: 20),
+                                  onPressed: copyDiagnosticLogs,
+                                  tooltip: 'Copy Logs',
+                                  color: Colors.white,
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_sweep, size: 20),
+                                  onPressed: clearDiagnosticLogs,
+                                  tooltip: 'Clear Logs & Transcript',
+                                  color: Colors.white,
+                                ),
+                              ],
                             ),
-                          ),
+                          )
                         ],
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: testAudioInitialization,
-                        icon: const Icon(Icons.speaker),
-                        label: const Text('Test Audio Init'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.purple,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: testWebRTCConnection,
-                        icon: const Icon(Icons.connect_without_contact),
-                        label: const Text('Test WebRTC'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.indigo,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: testTTSSystem,
-                        icon: const Icon(Icons.record_voice_over),
-                        label: const Text('Test TTS'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.teal,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: playTestSound,
-                        icon: const Icon(Icons.volume_up),
-                        label: const Text('Test Sound'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      // New: Start STT
-                      ElevatedButton.icon(
-                        onPressed: isRecording ? null : startRecording,
-                        icon: const Icon(Icons.mic),
-                        label: const Text('Start STT'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                      // New: Stop STT
-                      ElevatedButton.icon(
-                        onPressed: isRecording ? stopRecording : null,
-                        icon: const Icon(Icons.stop),
-                        label: const Text('Stop STT'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black87,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: ListView.builder(
-                        controller: diagnosticController,
-                        itemCount: diagnosticLogs.length,
-                        itemBuilder: (context, index) {
-                          final log = diagnosticLogs[index];
-                          Color textColor = Colors.white;
-                          if (log.contains("[Test]")) {
-                            textColor = Colors.yellow;
-                          } else if (log.contains("[error]")) {
-                            textColor = Colors.red;
-                          } else if (log.contains("[audio]")) {
-                            textColor = Colors.cyan;
-                          } else if (log.contains("[system]") || log.contains("[System]")) {
-                            textColor = Colors.green;
-                          }
-                          
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Text(
-                              log,
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 12,
-                                color: textColor,
-                              ),
-                            ),
-                          );
-                        },
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          _buildDiagnosticLogView(),
+                          _buildTranscriptView(),
+                        ],
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
         ],
