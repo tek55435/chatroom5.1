@@ -43,6 +43,52 @@ class _HomePageState extends State<HomePage> {
 
   final roomController = TextEditingController(text: 'main');
   final nameController = TextEditingController(text: 'Guest');
+  String selectedVoice = 'alloy';
+  final List<String> availableVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  bool personaDialogOpen = false;
+  Future<void> showPersonaDialog() async {
+    personaDialogOpen = true;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Create Your Persona'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Display Name'),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: selectedVoice,
+                items: availableVoices.map((voice) => DropdownMenuItem(
+                  value: voice,
+                  child: Text(voice[0].toUpperCase() + voice.substring(1)),
+                )).toList(),
+                onChanged: (v) {
+                  if (v != null) setState(() => selectedVoice = v);
+                },
+                decoration: const InputDecoration(labelText: 'Voice'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                personaDialogOpen = false;
+                Navigator.of(context).pop();
+              },
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+    personaDialogOpen = false;
+  }
   final inputController = TextEditingController();
   
   // Log entries for the diagnostic panel
@@ -1643,7 +1689,12 @@ class _HomePageState extends State<HomePage> {
             TextButton.icon(
               icon: const Icon(Icons.login, color: Colors.white),
               label: const Text('Join', style: TextStyle(color: Colors.white)),
-              onPressed: joinSession,
+              onPressed: () async {
+                if (!personaDialogOpen) {
+                  await showPersonaDialog();
+                }
+                joinSession();
+              },
             )
           else
             TextButton.icon(
