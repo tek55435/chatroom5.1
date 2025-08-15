@@ -7,20 +7,9 @@ import 'dart:js_util' as js_util;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart';
-import 'providers/persona_provider.dart';
-import 'screens/persona_list_screen.dart';
-import 'screens/persona_creation_dialog.dart';
 
 void main() {
-  runApp(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => PersonaProvider()),
-      ],
-      child: const MyApp(),
-    ),
-  );
+  runApp(const MyApp());
 }
 
 const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
@@ -31,10 +20,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Realtime TTS+STT',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
+      theme: ThemeData(primarySwatch: Colors.blue),
       home: const HomePage(),
     );
   }
@@ -57,14 +43,163 @@ class _HomePageState extends State<HomePage> {
 
   final roomController = TextEditingController(text: 'main');
   final nameController = TextEditingController(text: 'Guest');
+  String selectedVoice = 'alloy';
+  final List<String> availableVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  bool personaDialogOpen = false;
+  // Add mode selection to persona
+  String selectedMode = 'type'; // 'type' or 'speak'
+  String connectionStatus = "Disconnected";
+  
+  @override
+  void initState() {
+    super.initState();
+    
+    // Set up JavaScript callbacks
+    _setupJSCallbacks();
+    
+    // Auto-connect when the app starts
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Check URL for room ID
+      _checkAndExtractRoomIdFromUrl();
+      
+      // Add first message showing connection status
+      appendChat('[System] Connection Status: $connectionStatus');
+      
+      // Auto-join after a short delay
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!joined && !personaDialogOpen) {
+          joinSession();
+        }
+      });
+    });
+  }
+  
+  // Extract room ID from URL if present
+  void _checkAndExtractRoomIdFromUrl() {
+    final url = html.window.location.href;
+    appendTranscript('[system] Checking URL for room ID: $url');
+    
+    // Try to extract room ID from URL params
+    try {
+      final uri = Uri.parse(url);
+      final params = uri.queryParameters;
+      
+      if (params.containsKey('room')) {
+        final roomId = params['room'];
+        if (roomId != null && roomId.isNotEmpty) {
+          roomController.text = roomId;
+          appendTranscript('[system] Found room ID in URL: $roomId');
+          return;
+        }
+      }
+      
+      // Check for path segment format (e.g. /room/roomId)
+      final pathSegments = uri.pathSegments;
+      if (pathSegments.length >= 2 && pathSegments[0] == 'room') {
+        final roomId = pathSegments[1];
+        if (roomId.isNotEmpty) {
+          roomController.text = roomId;
+          appendTranscript('[system] Found room ID in URL path: $roomId');
+          return;
+        }
+      }
+      
+      appendTranscript('[system] No room ID found in URL, using default room: ${roomController.text}');
+    } catch (e) {
+      appendTranscript('[error] Error parsing URL: $e');
+    }
+  }
+  
+  // Update URL with room ID for sharing
+  void _updateUrlWithRoomId(String roomId) {
+    if (roomId.isEmpty) return;
+    
+    try {
+      final url = html.window.location.href;
+      final uri = Uri.parse(url);
+      final newUri = uri.replace(queryParameters: {'room': roomId});
+      html.window.history.pushState(null, '', newUri.toString());
+    } catch (e) {
+      appendTranscript('[error] Failed to update URL: $e');
+    }
+  }
+  Future<void> showPersonaDialog() async {
+    personaDialogOpen = true;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Create Your Persona'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Display Name'),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: selectedVoice,
+                    items: availableVoices.map((voice) => DropdownMenuItem(
+                      value: voice,
+                      child: Text(voice[0].toUpperCase() + voice.substring(1)),
+                    )).toList(),
+                    onChanged: (v) {
+                      if (v != null) setDialogState(() => selectedVoice = v);
+                    },
+                    decoration: const InputDecoration(labelText: 'Voice'),
+                  ),
+                  const SizedBox(height: 16),
+                  // Mode selection
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Interaction Mode', style: TextStyle(fontWeight: FontWeight.bold)),
+                      RadioListTile<String>(
+                        title: const Text('Type to Speak'),
+                        value: 'type',
+                        groupValue: selectedMode,
+                        onChanged: (v) {
+                          if (v != null) setDialogState(() => selectedMode = v);
+                        },
+                      ),
+                      RadioListTile<String>(
+                        title: const Text('Speak to Type'),
+                        value: 'speak',
+                        groupValue: selectedMode,
+                        onChanged: (v) {
+                          if (v != null) setDialogState(() => selectedMode = v);
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    personaDialogOpen = false;
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    personaDialogOpen = false;
+  }
   final inputController = TextEditingController();
   
   // Log entries for the diagnostic panel
   final List<String> diagnosticLogs = [];
-  final ScrollController diagnosticController = ScrollController();
-  
+  final ScrollController diagnosticController = ScrollController(); 
   bool showDiagnosticPanel = false;
-  String connectionStatus = "Disconnected";
   
   // Audio recording variables for STT
   dynamic mediaRecorder;
@@ -225,24 +360,37 @@ class _HomePageState extends State<HomePage> {
     ''']);
   }
 
-  @override
-  void initState() {
-    super.initState();
-    
+  // Set up callbacks for JavaScript functions
+  void _setupJSCallbacks() {
     // Set up JavaScript functions to call back into Flutter
     js.context['dartAppendTranscript'] = (String text) {
       appendTranscript(text);
     };
     
+    // Add callback for receiving chat messages
+    js.context['dartReceiveChat'] = (dynamic user, dynamic message) {
+      if (user != null && message != null) {
+        appendChat('${user.toString()}: ${message.toString()}');
+      }
+    };
+    
     // Add callback for when connection is fully established
-    js.context['dartConnectionEstablished'] = () {
-      setState(() { 
-        joined = true; 
-      });
-      appendTranscript('[system] Connection fully established and ready to use');
+    js.context['dartConnectionEstablished'] = (dynamic roomId) {
+      final confirmedRoomId = roomId != null ? roomId.toString() : roomController.text;
       
-      // Show persona dialog after connection is established
-      _showPersonaCreationDialog();
+      setState(() { 
+        joined = true;
+        connectionStatus = "Connected";
+        // Ensure the room controller has the correct room ID
+        roomController.text = confirmedRoomId;
+      });
+      
+      // Update connection status in the chat
+      appendChat('[System] Connection Status: $connectionStatus');
+      appendTranscript('[system] Connected to room: $confirmedRoomId');
+      
+      // Update the URL with the confirmed room ID
+      _updateUrlWithRoomId(confirmedRoomId);
       
       // Explicitly initialize audio context when connection is established
       js.context.callMethod('eval', ['''
@@ -266,38 +414,20 @@ class _HomePageState extends State<HomePage> {
       ''']);
     };
     
+    // Add function to receive chat messages from other users
+    js.context['dartReceiveChat'] = (dynamic user, dynamic message) {
+      if (user != null && message != null) {
+        final username = user.toString();
+        final text = message.toString();
+        appendChat('$username: $text');
+      }
+    };
+    
+    // Check for room ID in URL and auto-join if found
+    _checkForRoomIdInUrl();
+    
     // Make the server base URL available to JavaScript
     js.context['SERVER_BASE'] = SERVER_BASE;
-    
-    // Add our PCM helper script first
-    final pcmHelperScript = html.ScriptElement();
-    pcmHelperScript.type = 'text/javascript';
-    pcmHelperScript.src = 'pcm_helper.js';
-    html.document.head?.append(pcmHelperScript);
-    
-    // Add a script to the page that will hold our WebRTC code
-    final scriptEl = html.ScriptElement();
-    scriptEl.text = r'''
-      // Global WebRTC objects
-      let peerConnection = null;
-      let dataChannel = null;
-      let localStream = null;
-      
-      // Function to append to transcript (will be called from JS)
-      function appendToTranscript(text) {
-        if (window.dartAppendTranscript) {
-          window.dartAppendTranscript(text);
-        } else {
-          console.log("Transcript: " + text);
-        }
-      }
-      
-      // Initialize WebRTC
-      async function initWebRTC() {
-        try {
-          peerConnection = new RTCPeerConnection({
-            iceServers: []
-          });
           
           // Set up ontrack handler
           peerConnection.ontrack = (event) => {
@@ -602,18 +732,92 @@ class _HomePageState extends State<HomePage> {
       let connectionEstablished = false;
       
       // Function to notify Dart that connection is ready
-      function notifyConnectionReady() {
+      function notifyConnectionReady(roomId) {
         connectionEstablished = true;
         if (window.dartConnectionEstablished) {
-          window.dartConnectionEstablished();
+          // Pass current room ID back to Dart when connection is established
+          window.dartConnectionEstablished(roomId);
         }
       }
       
-      // Join session
-      async function joinRTCSession() {
+      // WebRTC peer connections and data channels
+      const peerConnections = new Map();
+      const dataChannels = new Map();
+      let wsConnection = null;
+      let currentRoomId = null;
+      
+      // Join WebRTC session with proper room handling
+      async function joinRTCSession(roomId) {
         try {
+          // Store the room ID
+          currentRoomId = roomId || 'main';
+          window.currentRoomId = currentRoomId;
+          console.log("Joining room:", currentRoomId);
+          appendToTranscript(`[system] Joining room: ${currentRoomId}`);
+          
           // Reset connection state
           connectionEstablished = false;
+          
+          // Connect to WebSocket server for signaling
+          wsConnection = new WebSocket(`ws://${window.location.hostname}:3000/webrtc`);
+          
+          wsConnection.onopen = () => {
+            console.log("WebSocket connected for signaling");
+            appendToTranscript("[system] WebRTC signaling connected");
+            
+            // Join the room
+            wsConnection.send(JSON.stringify({
+              type: 'join',
+              room: currentRoomId,
+              user: window.userName || 'Anonymous'
+            }));
+          };
+          
+          wsConnection.onmessage = async (event) => {
+            try {
+              const message = JSON.parse(event.data);
+              console.log("WebSocket message:", message);
+              
+              switch(message.type) {
+                case 'user-joined':
+                  // Create connection to new user
+                  await createPeerConnection(message.user);
+                  break;
+                  
+                case 'offer':
+                  await handleOffer(message);
+                  break;
+                  
+                case 'answer':
+                  await handleAnswer(message);
+                  break;
+                  
+                case 'ice-candidate':
+                  await handleIceCandidate(message);
+                  break;
+                  
+                case 'leave':
+                  handleUserLeft(message.user);
+                  break;
+                  
+                case 'message':
+                  handleChatMessage(message);
+                  break;
+              }
+            } catch (err) {
+              console.error("Error handling WebSocket message:", err);
+            }
+          };
+          
+          wsConnection.onclose = () => {
+            console.log("WebSocket closed");
+            appendToTranscript("[system] WebRTC signaling disconnected");
+          };
+          
+          wsConnection.onerror = (error) => {
+            console.error("WebSocket error:", error);
+            appendToTranscript("[error] WebRTC signaling error");
+          };
           
           // Initialize audio context early
           try {
@@ -633,25 +837,181 @@ class _HomePageState extends State<HomePage> {
             appendToTranscript("[error] Failed to initialize audio system: " + audioErr.message);
           }
           
-          if (!peerConnection) {
-            const initialized = await initWebRTC();
-            if (!initialized) return false;
+          // Store the user name
+          window.userName = window.userName || 'Anonymous';
+          
+          // Successfully connected to room via WebSocket
+          notifyConnectionReady(currentRoomId);
+          return true;
+        } catch (err) {
+          appendToTranscript("Error joining session: " + err.message);
+          console.error("Join session error:", err);
+          return false;
+        }
+      }
+      
+      // Create a new peer connection for a user
+      async function createPeerConnection(user) {
+        console.log(`Creating peer connection for ${user}`);
+        appendToTranscript(`[system] Creating connection to ${user}`);
+        
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        
+        peerConnections.set(user, pc);
+        
+        // Handle ICE candidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            wsConnection.send(JSON.stringify({
+              type: 'ice-candidate',
+              target: user,
+              candidate: event.candidate
+            }));
           }
-          
-          // Create offer
-          const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true
-          });
-          await peerConnection.setLocalDescription(offer);
-          
-          // Wait for ICE gathering
-          appendToTranscript("Creating offer...");
-          
-          // Send offer to server - use the SERVER_BASE from Dart
-          // Make sure we're using the absolute URL to the server
-          const serverUrl = 'http://localhost:3000'; // Hard-code for now to debug
-          const fullUrl = `${serverUrl}/offer`;
-          appendToTranscript(`Sending offer to: ${fullUrl}`);
+        };
+        
+        // Create data channel
+        const dc = pc.createDataChannel('chat');
+        setupDataChannel(dc, user);
+        dataChannels.set(user, dc);
+        
+        // Create and send offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        wsConnection.send(JSON.stringify({
+          type: 'offer',
+          target: user,
+          offer: pc.localDescription
+        }));
+      }
+      
+      // Handle an incoming WebRTC offer
+      async function handleOffer(message) {
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        
+        peerConnections.set(message.user, pc);
+        
+        pc.ondatachannel = (event) => {
+          const dc = event.channel;
+          setupDataChannel(dc, message.user);
+          dataChannels.set(message.user, dc);
+        };
+        
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            wsConnection.send(JSON.stringify({
+              type: 'ice-candidate',
+              target: message.user,
+              candidate: event.candidate
+            }));
+          }
+        };
+        
+        await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        wsConnection.send(JSON.stringify({
+          type: 'answer',
+          target: message.user,
+          answer: pc.localDescription
+        }));
+      }
+      
+      // Handle an incoming WebRTC answer
+      async function handleAnswer(message) {
+        const pc = peerConnections.get(message.user);
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+        }
+      }
+      
+      // Handle an incoming ICE candidate
+      async function handleIceCandidate(message) {
+        const pc = peerConnections.get(message.user);
+        if (pc) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+          } catch (e) {
+            console.error("Error adding ICE candidate:", e);
+          }
+        }
+      }
+      
+      // Handle a user leaving
+      function handleUserLeft(user) {
+        appendToTranscript(`[system] User ${user} left the room`);
+        const pc = peerConnections.get(user);
+        if (pc) {
+          pc.close();
+          peerConnections.delete(user);
+        }
+        dataChannels.delete(user);
+      }
+      
+      // Handle chat message from another user
+      function handleChatMessage(message) {
+        appendToTranscript(`${message.user}: ${message.data}`);
+        if (window.dartReceiveChat) {
+          window.dartReceiveChat(message.user, message.data);
+        }
+      }
+      
+      // Set up a data channel
+      function setupDataChannel(dc, user) {
+        dc.onopen = () => {
+          console.log(`Data channel with ${user} opened`);
+          appendToTranscript(`[system] Connected to ${user}`);
+        };
+        
+        dc.onclose = () => {
+          console.log(`Data channel with ${user} closed`);
+          appendToTranscript(`[system] Disconnected from ${user}`);
+        };
+        
+        dc.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            console.log(`Message from ${user}:`, message);
+            
+            if (message.type === 'chat') {
+              appendToTranscript(`${message.user}: ${message.data}`);
+              if (window.dartReceiveChat) {
+                window.dartReceiveChat(message.user, message.data);
+              }
+            }
+          } catch (e) {
+            console.error("Error parsing data channel message:", e);
+          }
+        };
+      }
+      
+      // Send a chat message to all connected peers
+      function sendChatMessage(message) {
+        const payload = {
+          type: 'chat',
+          user: window.userName,
+          data: message
+        };
+        
+        dataChannels.forEach(dc => {
+          if (dc.readyState === 'open') {
+            dc.send(JSON.stringify(payload));
+          }
+        });
+        
+        // Also send to the server for broadcast
+        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+          wsConnection.send(JSON.stringify({
+            type: 'message',
+            data: message
+          }));
+        }
+      }
           console.log("Server base from window:", window.SERVER_BASE);
           console.log("Using server URL:", serverUrl);
           
@@ -665,7 +1025,8 @@ class _HomePageState extends State<HomePage> {
                 'Content-Type': 'application/json'
               },
               body: JSON.stringify({
-                sdp: peerConnection.localDescription.sdp
+                sdp: peerConnection.localDescription.sdp,
+                room: window.currentRoomId || 'main'  // Include room ID in the request
               })
             });
           
@@ -1210,6 +1571,102 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  // Update the browser URL with the room ID without refreshing the page
+  // NOTE: This is a duplicate method - the one at the top of the file is used instead
+  void _alternateUpdateUrlWithRoomId(String roomId) {
+    if (roomId.isEmpty) return;
+    
+    try {
+      final currentUrl = html.window.location.href;
+      final baseUrl = currentUrl.split('?')[0]; // Remove any existing parameters
+      final newUrl = '$baseUrl?room=$roomId';
+      
+      // Update browser URL without reloading the page
+      html.window.history.pushState(null, '', newUrl);
+      appendTranscript('[system] URL updated with room ID: $roomId');
+      
+      // Store the current URL for sharing
+      setState(() {
+        _shareableUrl = newUrl;
+      });
+      
+      appendDiagnostic('[system] Shareable URL: $_shareableUrl');
+    } catch (e) {
+      appendTranscript('[error] Error updating URL: $e');
+    }
+  }
+  
+  // Shareable URL for this room
+  String _shareableUrl = '';
+  
+  // Store user name in JavaScript for WebRTC
+  void _storeUserNameForWebRTC() {
+    final name = nameController.text.isNotEmpty ? nameController.text : 'Guest';
+    js.context['userName'] = name;
+    js.context['selectedVoice'] = selectedVoice;
+    appendDiagnostic('[system] Set username for WebRTC: $name');
+    appendDiagnostic('[system] Set voice for TTS: $selectedVoice');
+  }
+
+  // Check for room ID in URL and auto-join if found
+  void _checkForRoomIdInUrl() {
+    try {
+      final url = html.window.location.href;
+      appendTranscript('[system] Checking URL for room ID: $url');
+      
+      // Parse the URL to check for room ID in query parameters
+      final uri = Uri.parse(url);
+      final roomId = uri.queryParameters['room'];
+      
+      if (roomId != null && roomId.isNotEmpty) {
+        appendTranscript('[system] Found room ID in URL: $roomId');
+        
+        // Store the room ID in JavaScript as well to ensure it's available
+        js.context['initialRoomId'] = roomId;
+        
+        // Set the room ID in the controller
+        setState(() {
+          roomController.text = roomId;
+        });
+        
+        // Show a message that we're auto-joining
+        appendTranscript('[system] Auto-joining room: $roomId');
+        
+        // Short delay to ensure everything is initialized
+        Future.delayed(Duration(milliseconds: 800), () {
+          if (!joined) {
+            // Auto-join the room if not already joined
+            if (!personaDialogOpen) {
+              showPersonaDialog().then((_) {
+                // Only join after persona dialog is closed and if not yet joined
+                if (!joined) {
+                  appendTranscript('[system] Auto-joining with room ID from URL: $roomId');
+                  joinSession();
+                }
+              });
+            } else {
+              // Join directly if persona dialog is already open
+              if (!joined) {
+                appendTranscript('[system] Auto-joining with room ID from URL: $roomId');
+                joinSession();
+              }
+            }
+          }
+        });
+      } else {
+        // Use the default room
+        if (roomController.text.isEmpty) {
+          setState(() {
+            roomController.text = 'main';
+          });
+        }
+        appendTranscript('[system] No room ID found in URL, using default room: ${roomController.text}');
+      }
+    } catch (e) {
+      appendTranscript('[error] Error checking URL for room ID: $e');
+    }
+  }
+
   Future<void> joinSession() async {
     if (joined) return;
     
@@ -1219,20 +1676,42 @@ class _HomePageState extends State<HomePage> {
       final response = await http.get(Uri.parse('$SERVER_BASE/'));
       if (response.statusCode != 200) {
         appendTranscript('Server connection test failed: ${response.statusCode}');
+        return; // Don't proceed if server is not available
       } else {
         appendTranscript('Server connection successful');
       }
     } catch (e) {
       appendTranscript('Server connection error: $e');
+      return; // Don't proceed if there was an error
     }
     
-    // Call the JavaScript function
-    final success = js.context.callMethod('webrtcJoin');
+    // Get the current room ID from the controller
+    final roomId = roomController.text;
+    if (roomId.isEmpty) {
+      appendTranscript('Room ID is required');
+      return;
+    }
+    
+    // Store the username for WebRTC
+    _storeUserNameForWebRTC();
+    
+    // Make sure JavaScript knows the room ID
+    js.context['initialRoomId'] = roomId;
+    
+    // Log the room ID we're joining
+    appendTranscript('[system] Attempting to join room: $roomId');
+    
+    // Call the JavaScript function with room ID
+    // The JS function expects roomId as first param
+    final success = js.context.callMethod('webrtcJoin', [roomId, nameController.text]);
     
     if (success == true) {
       // We don't set joined=true here anymore
       // Instead, we'll wait for dartConnectionEstablished to be called
-      appendTranscript('Session joining... please wait');
+      appendTranscript('Session joining room $roomId... please wait');
+      
+      // Note: URL will be updated in dartConnectionEstablished callback
+      // after connection is fully established
     } else {
       appendTranscript('Failed to join session');
     }
@@ -1247,8 +1726,19 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       joined = false;
       micOn = false;
+      connectionStatus = "Disconnected";
     });
+    
+    // Update connection status in the chat
+    appendChat('[System] Connection Status: $connectionStatus');
     appendTranscript('Left session');
+    
+    // Try to auto-reconnect after a short delay
+    Future.delayed(const Duration(milliseconds: 1000), () {
+      if (!joined && !personaDialogOpen) {
+        joinSession(); // Auto-rejoin
+      }
+    });
   }
 
   void startMic() async {
@@ -1285,34 +1775,40 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     
-    appendChat('${nameController.text}: $text');
+    // Clear the input field
     inputController.clear();
 
     if (!joined) {
-      appendChat('TTS failed: Not connected');
-      appendTranscript('[error] Cannot send TTS - not connected to session');
+      appendChat('Message failed: Not connected');
+      appendTranscript('[error] Cannot send message - not connected to session');
       return;
     }
 
     // Log attempt in the console
-    print('Attempting to send TTS: $text');
+    print('Sending TTS message: $text');
+    
+    // Add to local chat display
+    appendChat('${nameController.text}: $text');
     
     // Also add to transcript as the user utterance
     appendTranscript('(You) $text');
     
     try {
-      // Call the JavaScript function
-      final success = js.context.callMethod('webrtcSendTTS', [text]);
-      print('TTS send result: $success');
-      
-      if (success != true) {
-        appendChat('TTS failed: Error sending request');
-        appendTranscript('[error] Failed to send TTS request');
-      }
+      // Call the JavaScript function to send TTS message with audio
+      // This will both broadcast the message AND play audio
+      js.context.callMethod('webrtcSendTTS', [text]);
     } catch (e) {
-      print('Error sending TTS: $e');
-      appendTranscript('[error] Exception sending TTS: $e');
-      appendChat('TTS failed: Technical error');
+      print('Error sending TTS message: $e');
+      appendTranscript('[error] Exception sending TTS message: $e');
+      
+      // Fallback: try to send as normal chat message
+      try {
+        js.context.callMethod('sendChatMessage', [text]);
+        appendTranscript('[info] Sent as normal chat message (no TTS)');
+      } catch (e2) {
+        appendTranscript('[error] Failed to send message: $e2');
+        appendChat('Message failed: Technical error');
+      }
     }
   }
   
@@ -1527,22 +2023,42 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       
-      // Choose a Blob to upload: prefer fallback blob, else first recorded chunk
-      dynamic blob = fallbackBlob;
-      if (blob == null && audioChunks.isNotEmpty) {
-        blob = audioChunks.first; // MediaRecorder provides Blob in event.data
+      // Choose a Blob to upload: prefer merged audio chunks for better quality
+      dynamic blob;
+      if (audioChunks.isNotEmpty) {
+        if (audioChunks.length > 1) {
+          // Merge all audio chunks for better quality
+          final blobOptions = js.JsObject.jsify({'type': 'audio/webm'});
+          blob = js.context['Blob'].construct(js.JsArray.from(audioChunks), blobOptions);
+          appendTranscript('[debug] Created merged blob from ${audioChunks.length} chunks');
+        } else {
+          // Just use the first chunk if only one is available
+          blob = audioChunks.first;
+          appendTranscript('[debug] Using single audio chunk');
+        }
+      } else if (fallbackBlob != null) {
+        // Fall back to the simple recorder's blob if needed
+        blob = fallbackBlob;
+        appendTranscript('[debug] Using fallback recorder blob');
       }
+      
       if (blob == null) {
         appendTranscript('[error] No audio blob available to upload');
         setState(() { isTranscribing = false; });
         return;
       }
       
+      // Get blob size for debugging
+      final size = js_util.getProperty(blob, 'size');
+      appendTranscript('[debug] Audio blob size: $size bytes');
+      
       // Create FormData
-  // Build FormData using dart:html and append via JS interop (works for JS Blob types)
-  final formData = html.FormData();
-  final fileName = useSimpleRecorder ? 'recording.wav' : 'recording.webm';
-  js_util.callMethod(formData, 'append', ['file', blob, fileName]);
+      final formData = html.FormData();
+      final fileName = useSimpleRecorder ? 'recording.wav' : 'recording.webm';
+      js_util.callMethod(formData, 'append', ['file', blob, fileName]);
+      
+      // Add a prompt to help the STT model
+      js_util.callMethod(formData, 'append', ['prompt', 'This is a conversation in English. The speaker is saying:']);
       
       // Create XMLHttpRequest to handle the upload
       final xhr = html.HttpRequest();
@@ -1557,6 +2073,8 @@ class _HomePageState extends State<HomePage> {
           if (text != null && text.isNotEmpty) {
             appendTranscript('[success] Speech recognized: $text');
             inputController.text = text;
+            // Auto-send the recognized speech as a chat message
+            sendTypedAsTTS();
           } else {
             appendTranscript('[warning] No speech recognized');
           }
@@ -1564,14 +2082,14 @@ class _HomePageState extends State<HomePage> {
           appendTranscript('[error] STT API error: ${xhr.status}');
           print('STT API error response: ${xhr.responseText}');
         }
-  setState(() { isTranscribing = false; });
+        setState(() { isTranscribing = false; });
       });
       
       // Set up error handler
       xhr.onError.listen((event) {
         appendTranscript('[error] STT API network error');
         print('STT API network error: $event');
-  setState(() { isTranscribing = false; });
+        setState(() { isTranscribing = false; });
       });
       
       // Send the request
@@ -1581,25 +2099,6 @@ class _HomePageState extends State<HomePage> {
       print('Error with STT API: $e');
   setState(() { isTranscribing = false; });
     }
-  }
-
-  // Show persona creation dialog if needed
-  void _showPersonaCreationDialog() {
-    // Delay slightly to ensure the UI is ready
-    Future.delayed(Duration(milliseconds: 300), () {
-      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
-      
-      // Only show dialog if user doesn't have a persona yet
-      if (personaProvider.personas.isEmpty) {
-        showDialog(
-          context: context,
-          barrierDismissible: false, // User must create a persona
-          builder: (BuildContext context) {
-            return const PersonaCreationDialog();
-          },
-        );
-      }
-    });
   }
 
   @override
@@ -1669,17 +2168,6 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Realtime Voice Chat'),
         backgroundColor: Colors.blueGrey[900],
         actions: [
-          // Persona management button
-          IconButton(
-            icon: const Icon(Icons.person_outline),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const PersonaListScreen()),
-              );
-            },
-            tooltip: 'Manage Persona',
-          ),
           Center(child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Text(
@@ -1691,9 +2179,91 @@ class _HomePageState extends State<HomePage> {
             TextButton.icon(
               icon: const Icon(Icons.login, color: Colors.white),
               label: const Text('Join', style: TextStyle(color: Colors.white)),
-              onPressed: joinSession,
-            )
-          else
+              onPressed: () async {
+                if (!personaDialogOpen) {
+                  await showPersonaDialog();
+                }
+                joinSession();
+              },
+            ),
+          // Share room button when connected
+          if (joined && _shareableUrl.isNotEmpty)
+            TextButton.icon(
+              icon: const Icon(Icons.share, color: Colors.white),
+              label: const Text('Share Room', style: TextStyle(color: Colors.white)),
+              onPressed: () {
+                // Show a dialog with the shareable URL
+                showDialog(
+                  context: context,
+                  builder: (BuildContext context) {
+                    return AlertDialog(
+                      title: const Text('Share this Room'),
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Share this URL to invite others:'),
+                          const SizedBox(height: 10),
+                          SelectableText(_shareableUrl),
+                          const SizedBox(height: 20),
+                          const Text('Room ID:'),
+                          SelectableText(roomController.text, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      actions: [
+                        TextButton(
+                          child: const Text('Copy URL'),
+                          onPressed: () {
+                            html.window.navigator.clipboard?.writeText(_shareableUrl);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('URL copied to clipboard!'))
+                            );
+                          },
+                        ),
+                        TextButton(
+                          child: const Text('Close'),
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                          },
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
+          IconButton(
+            icon: const Icon(Icons.share, color: Colors.white),
+            tooltip: 'Share this room',
+            onPressed: () {
+              // Get the current room ID - use the one we're connected to if joined
+              final roomId = roomController.text.isEmpty ? 'main' : roomController.text;
+              
+              // Create a sharable URL that will auto-join the room
+              final currentUrl = html.window.location.href;
+              final baseUrl = currentUrl.split('?')[0]; // Remove any existing parameters
+              final shareUrl = '$baseUrl?room=$roomId';
+              
+              // Copy to clipboard
+              html.window.navigator.clipboard?.writeText(shareUrl);
+              
+              // Show a snackbar
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Join link copied to clipboard'),
+                  action: SnackBarAction(
+                    label: 'VIEW',
+                    onPressed: () {
+                      html.window.open(shareUrl, '_blank');
+                    },
+                  ),
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+              
+              appendTranscript('[system] Room invitation link copied: $shareUrl');
+            },
+          ),
+          if (joined)
             TextButton.icon(
               icon: const Icon(Icons.logout, color: Colors.white),
               label: const Text('Leave', style: TextStyle(color: Colors.white)),
