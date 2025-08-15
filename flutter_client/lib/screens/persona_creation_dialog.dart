@@ -39,7 +39,7 @@ class _PersonaCreationDialogState extends State<PersonaCreationDialog> {
     // Use DiceBear API to generate an avatar based on name
     // This will update whenever the name changes
     final name = _nameController.text.isNotEmpty ? _nameController.text : 'User';
-    final avatarUrl = 'https://api.dicebear.com/7.x/adventurer/svg?seed=${Uri.encodeComponent(name)}';
+    final avatarUrl = 'https://api.dicebear.com/7.x/adventurer/png?seed=${Uri.encodeComponent(name)}';
     _avatarUrlController.text = avatarUrl;
   }
 

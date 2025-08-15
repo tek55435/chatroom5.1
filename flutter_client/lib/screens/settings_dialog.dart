@@ -260,7 +260,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       onPressed: () {
                         final seed = _avatarSeedController.text;
                         if (seed.isNotEmpty) {
-                          final avatarUrl = 'https://api.dicebear.com/7.x/adventurer/svg?seed=${Uri.encodeComponent(seed)}';
+                          final avatarUrl = 'https://api.dicebear.com/7.x/adventurer/png?seed=${Uri.encodeComponent(seed)}';
                           
                           // Update the persona with new avatar URL
                           final updatedPersona = UserPersona(

@@ -10,18 +10,29 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'providers/persona_provider.dart';
 import 'providers/settings_provider.dart';
+import 'providers/ephemeral_chat_provider.dart';
 import 'screens/persona_list_screen.dart';
 import 'screens/persona_creation_dialog.dart';
 import 'screens/settings_dialog.dart';
+import 'screens/ephemeral_chat_screen.dart';
 
 void main() {
+  // Check if the URL has chat parameters
+  final uri = Uri.parse(html.window.location.href);
+  final hasSessionId = uri.queryParameters.containsKey('sessionId');
+  final chatMode = uri.queryParameters['chat'] == 'true';
+  
+  // Initial route based on URL parameters
+  final initialRoute = (hasSessionId && chatMode) ? '/chat' : '/';
+  
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PersonaProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
+        ChangeNotifierProvider(create: (_) => EphemeralChatProvider()),
       ],
-      child: const MyApp(),
+      child: MyApp(initialRoute: initialRoute),
     ),
   );
 }
@@ -29,7 +40,10 @@ void main() {
 const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final String initialRoute;
+  
+  const MyApp({super.key, this.initialRoute = '/'});
+  
   @override
   Widget build(BuildContext context) {
     // Access the settings provider to check if dark mode is enabled
@@ -49,7 +63,11 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
       ),
       themeMode: settingsProvider.darkMode ? ThemeMode.dark : ThemeMode.light,
-      home: const HomePage(),
+      routes: {
+        '/': (context) => const HomePage(),
+        '/chat': (context) => const EphemeralChatScreen(),
+      },
+      initialRoute: initialRoute,
     );
   }
 }
@@ -1735,6 +1753,14 @@ class _HomePageState extends State<HomePage> {
               // Show help dialog (to be implemented)
             },
             tooltip: 'Help',
+          ),
+          // Chat button
+          IconButton(
+            icon: const Icon(Icons.chat),
+            onPressed: () {
+              Navigator.pushNamed(context, '/chat');
+            },
+            tooltip: 'Ephemeral Chat',
           ),
           // Share button (placeholder for now)
           IconButton(

@@ -1,5 +1,12 @@
 // File: C:\Dev\Chatroom5\flutter_client\web\pcm_helper.js
-class PCMHelper {
+// Using a namespace to avoid conflicts with other PCMHelper implementations
+window.WebPCMHelper = window.WebPCMHelper || {};
+
+window.WebPCMHelper.createHelper = function() {
+  return new WebPCMHelperClass();
+};
+
+class WebPCMHelperClass {
   constructor() {
     this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
   }
@@ -15,4 +22,4 @@ class PCMHelper {
   // Add other PCM processing methods here
 }
 // Make available globally
-window.pcmHelper = new PCMHelper();
+window.pcmHelper = window.WebPCMHelper.createHelper();
