@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/user_persona.dart';
 import '../providers/persona_provider.dart';
+import '../providers/settings_provider.dart';
 import '../services/voice_service.dart';
 
 class EditPersonaScreen extends StatefulWidget {
@@ -19,6 +20,7 @@ class _EditPersonaScreenState extends State<EditPersonaScreen> {
   late TextEditingController _descriptionController;
   late TextEditingController _avatarUrlController;
   late String _selectedVoiceId;
+  late bool _isTypeToSpeakMode;
   
   List<Voice> _availableVoices = [];
 
@@ -29,6 +31,7 @@ class _EditPersonaScreenState extends State<EditPersonaScreen> {
     _descriptionController = TextEditingController(text: widget.persona.description);
     _avatarUrlController = TextEditingController(text: widget.persona.avatarUrl);
     _selectedVoiceId = widget.persona.voiceId;
+    _isTypeToSpeakMode = widget.persona.isTypeToSpeakMode;
     
     _availableVoices = VoiceService.getAvailableVoices();
   }
@@ -93,6 +96,46 @@ class _EditPersonaScreenState extends State<EditPersonaScreen> {
             ),
             const SizedBox(height: 24),
             const Text(
+              'How do you prefer to communicate?',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: RadioListTile<bool>(
+                    title: const Text('Type to Speak'),
+                    subtitle: const Text('I prefer to type messages'),
+                    value: true,
+                    groupValue: _isTypeToSpeakMode,
+                    onChanged: (bool? value) {
+                      if (value != null) {
+                        setState(() {
+                          _isTypeToSpeakMode = value;
+                        });
+                      }
+                    },
+                  ),
+                ),
+                Expanded(
+                  child: RadioListTile<bool>(
+                    title: const Text('Speak to Type'),
+                    subtitle: const Text('I prefer to speak messages'),
+                    value: false,
+                    groupValue: _isTypeToSpeakMode,
+                    onChanged: (bool? value) {
+                      if (value != null) {
+                        setState(() {
+                          _isTypeToSpeakMode = value;
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            const Text(
               'Select Voice',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
@@ -139,9 +182,15 @@ class _EditPersonaScreenState extends State<EditPersonaScreen> {
         description: _descriptionController.text,
         voiceId: _selectedVoiceId,
         avatarUrl: _avatarUrlController.text,
+        isTypeToSpeakMode: _isTypeToSpeakMode,
       );
 
       Provider.of<PersonaProvider>(context, listen: false).updatePersona(updatedPersona);
+      
+      // Update settings based on persona preferences
+      final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+      settingsProvider.setAvatarSeed(_nameController.text);
+      settingsProvider.setPlayIncomingAudio(!_isTypeToSpeakMode);
       
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Persona updated successfully')),

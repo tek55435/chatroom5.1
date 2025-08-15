@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import '../models/user_persona.dart';
 import '../providers/persona_provider.dart';
+import '../providers/settings_provider.dart';
 import '../services/voice_service.dart';
 
 class PersonaCreationDialog extends StatefulWidget {
@@ -233,7 +234,14 @@ class _PersonaCreationDialogState extends State<PersonaCreationDialog> {
         isTypeToSpeakMode: _isTypeToSpeakMode,
       );
       
+      // Save the persona
       Provider.of<PersonaProvider>(context, listen: false).addPersona(newPersona);
+      
+      // Update the avatar seed in settings
+      Provider.of<SettingsProvider>(context, listen: false).setAvatarSeed(_nameController.text);
+      
+      // Configure audio defaults based on interaction mode
+      Provider.of<SettingsProvider>(context, listen: false).setPlayIncomingAudio(!_isTypeToSpeakMode);
       
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Welcome, ${newPersona.name}!')),

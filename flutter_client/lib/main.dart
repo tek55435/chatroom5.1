@@ -9,14 +9,17 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'providers/persona_provider.dart';
+import 'providers/settings_provider.dart';
 import 'screens/persona_list_screen.dart';
 import 'screens/persona_creation_dialog.dart';
+import 'screens/settings_dialog.dart';
 
 void main() {
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PersonaProvider()),
+        ChangeNotifierProvider(create: (_) => SettingsProvider()),
       ],
       child: const MyApp(),
     ),
@@ -29,12 +32,23 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
+    // Access the settings provider to check if dark mode is enabled
+    final settingsProvider = Provider.of<SettingsProvider>(context);
+    
     return MaterialApp(
       title: 'Realtime TTS+STT',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      themeMode: settingsProvider.darkMode ? ThemeMode.dark : ThemeMode.light,
       home: const HomePage(),
     );
   }
@@ -234,6 +248,12 @@ class _HomePageState extends State<HomePage> {
       appendTranscript(text);
     };
     
+    // Listen for changes in settings and update accordingly
+    Future.delayed(Duration.zero, () {
+      final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+      settingsProvider.addListener(_updateAudioSettings);
+    });
+    
     // Add callback for when connection is fully established
     js.context['dartConnectionEstablished'] = () {
       setState(() { 
@@ -243,6 +263,9 @@ class _HomePageState extends State<HomePage> {
       
       // Show persona dialog after connection is established
       _showPersonaCreationDialog();
+      
+      // Update audio settings based on user preferences
+      _updateAudioSettings();
       
       // Explicitly initialize audio context when connection is established
       js.context.callMethod('eval', ['''
@@ -1601,9 +1624,39 @@ class _HomePageState extends State<HomePage> {
       }
     });
   }
+  
+  // Show settings dialog
+  void _showSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return const SettingsDialog();
+      },
+    );
+  }
+  
+  // Update audio settings based on user preferences
+  void _updateAudioSettings() {
+    final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+    final playAudio = settingsProvider.playIncomingAudio;
+    
+    // Update JavaScript audio settings
+    js.context.callMethod('eval', ['''
+      window.playIncomingAudio = $playAudio;
+      console.log("Audio playback settings updated: " + window.playIncomingAudio);
+      if (window.dartAppendTranscript) {
+        window.dartAppendTranscript("[settings] Play incoming audio set to: " + window.playIncomingAudio);
+      }
+    ''']);
+  }
 
   @override
   void dispose() {
+    // Remove listeners
+    final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
+    settingsProvider.removeListener(_updateAudioSettings);
+    
+    // Dispose controllers
     transcriptController.dispose();
     inputController.dispose();
     roomController.dispose();
@@ -1669,6 +1722,28 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Realtime Voice Chat'),
         backgroundColor: Colors.blueGrey[900],
         actions: [
+          // Settings button
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showSettingsDialog,
+            tooltip: 'Settings',
+          ),
+          // Help button (placeholder for now)
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            onPressed: () {
+              // Show help dialog (to be implemented)
+            },
+            tooltip: 'Help',
+          ),
+          // Share button (placeholder for now)
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () {
+              // Show share dialog (to be implemented)
+            },
+            tooltip: 'Share',
+          ),
           // Persona management button
           IconButton(
             icon: const Icon(Icons.person_outline),
