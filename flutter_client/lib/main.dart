@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'providers/persona_provider.dart';
 import 'providers/settings_provider.dart';
+import 'providers/chat_session_provider.dart';
 // Removed Ephemeral Chat imports per requirement
 // (unused here) import 'screens/persona_list_screen.dart';
 import 'screens/persona_creation_dialog.dart';
@@ -26,6 +27,7 @@ void main() {
       providers: [
         ChangeNotifierProvider(create: (_) => PersonaProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
+  ChangeNotifierProvider(create: (_) => ChatSessionProvider()),
   // EphemeralChatProvider removed per requirement
       ],
       child: const MyApp(),
@@ -95,6 +97,10 @@ class _HomePageState extends State<HomePage> {
   dynamic simpleRecorder; // JS-based fallback recorder
   bool useSimpleRecorder = false;
   dynamic fallbackBlob; // Blob from fallback recorder
+  
+
+  // Auto-connect handled by ChatSessionProvider
+
 
   // Injects a minimal JS recorder into the page if not present yet.
   void _ensureSimpleRecorderInjected() {
@@ -191,6 +197,7 @@ class _HomePageState extends State<HomePage> {
 
   bool joined = false;
   bool micOn = false;
+  bool _personaPrompted = false;
   
   // Function to test audio output
   void playTestSound() {
@@ -251,6 +258,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+  // Auto-connect handled by ChatSessionProvider
     
     // Set up JavaScript functions to call back into Flutter
     js.context['dartAppendTranscript'] = (String text) {
@@ -269,10 +277,7 @@ class _HomePageState extends State<HomePage> {
         joined = true; 
       });
       appendTranscript('[system] Connection fully established and ready to use');
-      
-      // Show persona dialog after connection is established
-      _showPersonaCreationDialog();
-      
+
       // Update audio settings based on user preferences
       _updateAudioSettings();
       
@@ -642,7 +647,7 @@ class _HomePageState extends State<HomePage> {
       }
       
       // Join session
-      async function joinRTCSession() {
+  async function joinRTCSession(attempt = 0) {
         try {
           // Reset connection state
           connectionEstablished = false;
@@ -680,8 +685,10 @@ class _HomePageState extends State<HomePage> {
           appendToTranscript("Creating offer...");
           
           // Send offer to server - use the SERVER_BASE from Dart
-          // Make sure we're using the absolute URL to the server
-          const serverUrl = 'http://localhost:3000'; // Hard-code for now to debug
+          // Prefer window.SERVER_BASE injected from Dart, fallback to localhost:3000
+          const serverUrl = (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') 
+            ? window.SERVER_BASE 
+            : 'http://localhost:3000';
           const fullUrl = `${serverUrl}/offer`;
           appendToTranscript(`Sending offer to: ${fullUrl}`);
           console.log("Server base from window:", window.SERVER_BASE);
@@ -705,6 +712,10 @@ class _HomePageState extends State<HomePage> {
             appendToTranscript("Error from server: " + response.status);
             const errorText = await response.text();
             appendToTranscript(errorText);
+            // Retry with backoff when server responds with error
+            const delay = Math.min(30000, 2000 * Math.max(1, attempt + 1));
+            appendToTranscript(`[retry] Join failed (HTTP ${response.status}). Retrying in ${Math.round(delay/1000)}s...`);
+            setTimeout(() => joinRTCSession(attempt + 1), delay);
             return false;
           }
           
@@ -726,11 +737,20 @@ class _HomePageState extends State<HomePage> {
           } catch (err) {
             appendToTranscript(`Fetch error: ${err.message}`);
             console.error("Fetch error:", err);
+            // Retry with backoff if network error (server down/not yet started)
+            const delay = Math.min(30000, 2000 * Math.max(1, attempt + 1));
+            appendToTranscript(`[retry] Network error joining session. Retrying in ${Math.round(delay/1000)}s... (attempt ${attempt+1})`);
+            setTimeout(() => joinRTCSession(attempt + 1), delay);
             return false;
           }
         } catch (err) {
           appendToTranscript("Error joining session: " + err.message);
           console.error("Join session error:", err);
+          // Retry unexpected errors a couple of times
+          if (attempt < 3) {
+            const delay = 2000 * (attempt + 1);
+            setTimeout(() => joinRTCSession(attempt + 1), delay);
+          }
           return false;
         }
       }
@@ -1091,7 +1111,38 @@ class _HomePageState extends State<HomePage> {
       window.webrtcSendTTS = sendTTS;
     ''';
     
-    html.document.body!.append(scriptEl);
+  html.document.body!.append(scriptEl);
+
+  // After first frame: ensure persona, then connect and join RTC
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
+      if (personaProvider.personas.isEmpty && !_personaPrompted) {
+        _personaPrompted = true;
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => const PersonaCreationDialog(),
+        );
+      }
+
+      // Connect chat backend (provider also auto-connects; this ensures timing after persona)
+      try {
+        final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+        if (!chat.isConnected && !chat.isConnecting) {
+          await chat.connectToChatRoom(null);
+          if (nameController.text.isNotEmpty) {
+            chat.setUserName(nameController.text);
+          }
+        }
+      } catch (_) {}
+
+      // Join WebRTC session once bridge is ready
+      js.context.callMethod('eval', ['''
+        try {
+      setTimeout(() => { if (window.webrtcJoin) window.webrtcJoin(0); }, 0);
+        } catch (err) { console.error('Failed to join WebRTC:', err); }
+      ''']);
+    });
   }
 
   void appendTranscript(String s) {
@@ -1615,24 +1666,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Show persona creation dialog if needed
-  void _showPersonaCreationDialog() {
-    // Delay slightly to ensure the UI is ready
-    Future.delayed(Duration(milliseconds: 300), () {
-      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
-      
-      // Only show dialog if user doesn't have a persona yet
-      if (personaProvider.personas.isEmpty) {
-        showDialog(
-          context: context,
-          barrierDismissible: false, // User must create a persona
-          builder: (BuildContext context) {
-            return const PersonaCreationDialog();
-          },
-        );
-      }
-    });
-  }
+  // (removed) _showPersonaCreationDialog — persona prompting handled in postFrame callback above
   
   // Settings dialog is now accessed via named route in the Drawer
   
