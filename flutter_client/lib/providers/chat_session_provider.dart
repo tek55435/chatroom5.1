@@ -20,6 +20,8 @@ class ChatSessionProvider extends ChangeNotifier {
   bool _isConnecting = false;
   String? _errorMessage;
   bool _autoConnectStarted = false;
+  Timer? _pollTimer;
+  int _activeParticipants = 0;
 
   // Session properties
   List<ChatMessage> _messages = [];
@@ -37,6 +39,7 @@ class ChatSessionProvider extends ChangeNotifier {
   String? get sessionId => _sessionId;
   String? get clientId => _clientId;
   String? get userName => _userName;
+  int get activeParticipants => _activeParticipants;
   
   ChatSessionProvider() {
     // Auto-connect once after provider is created, regardless of which screen loads
@@ -187,6 +190,7 @@ class ChatSessionProvider extends ChangeNotifier {
     _clientId = message['clientId'];
     _isConnected = true;
     _isConnecting = false;
+  _startParticipantsPolling();
     
     // If we have a username, send it to the server
     if (_userName != null && _userName!.isNotEmpty) {
@@ -241,6 +245,7 @@ class ChatSessionProvider extends ChangeNotifier {
     _errorMessage = 'Connection error: ${error.toString()}';
     _isConnected = false;
     _isConnecting = false;
+  _stopParticipantsPolling();
     notifyListeners();
   }
   
@@ -248,12 +253,40 @@ class ChatSessionProvider extends ChangeNotifier {
   void _handleDisconnect() {
     _isConnected = false;
     _isConnecting = false;
+  _stopParticipantsPolling();
     notifyListeners();
   }
   
   @override
   void dispose() {
+    _stopParticipantsPolling();
     disconnect();
     super.dispose();
+  }
+
+  void _startParticipantsPolling() {
+    _stopParticipantsPolling();
+    if (_sessionId == null || _sessionId!.isEmpty) return;
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      try {
+        final resp = await http.get(Uri.parse('http://$_serverUrl/api/chat/session/${_sessionId}/active'));
+        if (resp.statusCode == 200) {
+          final data = jsonDecode(resp.body);
+          final count = (data['participants'] as num?)?.toInt() ?? 0;
+          if (count != _activeParticipants) {
+            _activeParticipants = count;
+            notifyListeners();
+          }
+        }
+      } catch (_) {
+        // ignore polling errors
+      }
+    });
+  }
+
+  void _stopParticipantsPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _activeParticipants = 0;
   }
 }

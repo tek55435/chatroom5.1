@@ -84,6 +84,7 @@ class _HomePageState extends State<HomePage> {
   final roomController = TextEditingController(text: 'main');
   final nameController = TextEditingController(text: 'Guest');
   final inputController = TextEditingController();
+  final TextEditingController roomMsgController = TextEditingController();
   
   // Log entries for the diagnostic panel
   final List<String> diagnosticLogs = [];
@@ -198,6 +199,7 @@ class _HomePageState extends State<HomePage> {
   bool joined = false;
   bool micOn = false;
   bool _personaPrompted = false;
+  int _lastHandledChatIndex = -1;
   
   // Function to test audio output
   void playTestSound() {
@@ -269,6 +271,12 @@ class _HomePageState extends State<HomePage> {
     Future.delayed(Duration.zero, () {
       final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
       settingsProvider.addListener(_updateAudioSettings);
+
+  // Listen for new chat messages to optionally auto-play on this client
+  final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+  chat.addListener(_onChatUpdated);
+  // Avoid replaying full history on first attach
+  _lastHandledChatIndex = chat.messages.length - 1;
     });
     
     // Add callback for when connection is fully established
@@ -1367,35 +1375,18 @@ class _HomePageState extends State<HomePage> {
       appendTranscript('[info] Cannot send empty message');
       return;
     }
-    
-    appendChat('${nameController.text}: $text');
-    inputController.clear();
-
-    if (!joined) {
-      appendChat('TTS failed: Not connected');
-      appendTranscript('[error] Cannot send TTS - not connected to session');
-      return;
-    }
-
-    // Log attempt in the console
-    print('Attempting to send TTS: $text');
-    
-    // Also add to transcript as the user utterance
-    appendTranscript('(You) $text');
-    
+    // Post to shared chat (so others hear it); do not play locally by default
     try {
-      // Call the JavaScript function
-      final success = js.context.callMethod('webrtcSendTTS', [text]);
-      print('TTS send result: $success');
-      
-      if (success != true) {
-        appendChat('TTS failed: Error sending request');
-        appendTranscript('[error] Failed to send TTS request');
+      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+      if (!chat.isConnected && !chat.isConnecting) {
+        chat.connectToChatRoom(null);
       }
+      chat.sendMessage(text);
+      appendTranscript('(You) $text');
     } catch (e) {
-      print('Error sending TTS: $e');
-      appendTranscript('[error] Exception sending TTS: $e');
-      appendChat('TTS failed: Technical error');
+      appendTranscript('[error] Failed to send message to room: $e');
+    } finally {
+      inputController.clear();
     }
   }
   
@@ -1640,6 +1631,16 @@ class _HomePageState extends State<HomePage> {
           if (text != null && text.isNotEmpty) {
             appendTranscript('[success] Speech recognized: $text');
             inputController.text = text;
+            // Auto-post recognized text to the shared chat; no local playback by default
+            try {
+              final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+              if (!chat.isConnected && !chat.isConnecting) {
+                chat.connectToChatRoom(null);
+              }
+              chat.sendMessage(text);
+            } catch (e) {
+              appendTranscript('[error] Failed to post STT text to room: $e');
+            }
           } else {
             appendTranscript('[warning] No speech recognized');
           }
@@ -1663,6 +1664,46 @@ class _HomePageState extends State<HomePage> {
       appendTranscript('[error] Exception converting speech to text: $e');
       print('Error with STT API: $e');
   setState(() { isTranscribing = false; });
+    }
+  }
+
+  // React to new chat messages: play incoming messages on Speak-to-Type clients
+  void _onChatUpdated() async {
+    try {
+      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+      if (chat.messages.isEmpty) return;
+      final settings = Provider.of<SettingsProvider>(context, listen: false);
+
+      // Process only new messages since last check
+      int start = _lastHandledChatIndex + 1;
+      if (start < 0) start = 0;
+      for (int i = start; i < chat.messages.length; i++) {
+        final m = chat.messages[i];
+        if (m.type != 'chat') {
+          continue;
+        }
+        final isFromSelf = (m.clientId != null && m.clientId == chat.clientId);
+        if (isFromSelf) {
+          // Do not auto-play locally by default
+          continue;
+        }
+        if (settings.playIncomingAudio) {
+          // Prefer WebRTC path if joined; else fall back to direct API playback
+          try {
+            if (joined) {
+              js.context.callMethod('webrtcSendTTS', [m.message]);
+            } else {
+              await useDirectTTS(m.message);
+            }
+            appendTranscript('[audio] Auto-playing incoming: ${m.sender ?? 'Guest'}');
+          } catch (e) {
+            appendTranscript('[error] Failed to auto-play incoming message: $e');
+          }
+        }
+      }
+      _lastHandledChatIndex = chat.messages.length - 1;
+    } catch (_) {
+      // ignore handler errors
     }
   }
 
@@ -1690,29 +1731,61 @@ class _HomePageState extends State<HomePage> {
     // Remove listeners
     final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
     settingsProvider.removeListener(_updateAudioSettings);
+    // Remove chat listener
+    try {
+      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+      chat.removeListener(_onChatUpdated);
+    } catch (_) {}
     
     // Dispose controllers
     transcriptController.dispose();
     inputController.dispose();
+  roomMsgController.dispose();
     roomController.dispose();
     nameController.dispose();
     super.dispose();
   }
 
   // --- Drawer actions ---
-  void _openInviteDialog() {
+  Future<void> _openInviteDialog() async {
     try {
-      final url = _buildShareUrl();
-      final sessionId = _extractSessionId(url) ?? 'unknown';
+      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+      // Ensure we have a server-backed sessionId
+      if ((chat.sessionId == null || chat.sessionId!.isEmpty) && !chat.isConnecting) {
+        await chat.connectToChatRoom(null);
+      }
+
+      // If still missing (server might be down), fall back to current URL param
+      String? sessionId = chat.sessionId ?? _extractSessionId(html.window.location.href);
+      if (sessionId == null || sessionId.isEmpty) {
+        // Make one last attempt to connect/create
+        await chat.connectToChatRoom(null);
+        sessionId = chat.sessionId;
+      }
+
+      if (sessionId == null || sessionId.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No session available to share yet. Try again in a moment.')),
+        );
+        return;
+      }
+
+      // Build canonical share URL and update address bar to match
+      final base = html.window.location.href.split('?').first;
+      final shareUrl = '$base?sessionId=$sessionId';
+      if (_extractSessionId(html.window.location.href) != sessionId) {
+        html.window.history.pushState(null, 'Chat Room $sessionId', shareUrl);
+      }
+
       showDialog(
         context: context,
-        builder: (_) => ShareDialog(sessionId: sessionId, shareUrl: url),
+        builder: (_) => ShareDialog(sessionId: sessionId!, shareUrl: shareUrl),
       );
     } catch (e) {
       // ignore: avoid_print
       print('Invite open failed: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to open invite right now')),
+        SnackBar(content: Text('Unable to open invite: $e')),
       );
     }
   }
@@ -1744,21 +1817,9 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  String _buildShareUrl() {
-    final base = html.window.location.href.split('?').first;
-    final sessionId = _extractSessionId(html.window.location.href) ?? _ensureSessionIdInUrl();
-    return '$base?sessionId=$sessionId';
-  }
+  // (removed) _buildShareUrl — share link is computed in _openInviteDialog
 
-  String _ensureSessionIdInUrl() {
-    final uri = Uri.parse(html.window.location.href);
-    final existing = uri.queryParameters['sessionId'];
-    if (existing != null && existing.isNotEmpty) return existing;
-    final generated = DateTime.now().millisecondsSinceEpoch.toString();
-    final newUrl = '${uri.replace(queryParameters: {'sessionId': generated}).toString()}';
-    html.window.history.pushState(null, 'Chat Room $generated', newUrl);
-    return generated;
-  }
+  // (removed) _ensureSessionIdInUrl — avoid generating client-only IDs; use server-issued sessionId
 
   String? _extractSessionId(String url) {
     try {
@@ -1841,6 +1902,27 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Column(
         children: [
+          // Room info/status bar
+          Consumer<ChatSessionProvider>(
+            builder: (context, chat, _) {
+              final sid = chat.sessionId ?? _extractSessionId(html.window.location.href) ?? '—';
+              final cnt = chat.activeParticipants;
+              return Container(
+                width: double.infinity,
+                color: Colors.blueGrey.withOpacity(0.08),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Text('Room: $sid', style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 12),
+                    Icon(Icons.group, size: 14, color: Colors.blueGrey[600]),
+                    const SizedBox(width: 4),
+                    Text('${cnt} online', style: const TextStyle(fontSize: 12)),
+                  ],
+                ),
+              );
+            },
+          ),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1855,21 +1937,62 @@ class _HomePageState extends State<HomePage> {
                       children: [
                         Text('Conversation', style: Theme.of(context).textTheme.headlineSmall),
                         const Divider(height: 20),
-                        Expanded(
-                          child: ListView.builder(
-                            itemCount: chatLines.length,
-                            itemBuilder: (context, index) {
-                              return Container(
-                                margin: const EdgeInsets.symmetric(vertical: 4),
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(8),
-                                  boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 3)],
+                        // Simple "send to room" to verify WS broadcast works
+                        Consumer<ChatSessionProvider>(
+                          builder: (context, chat, _) => Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: roomMsgController,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Type a message to send to the room (debug)',
+                                    isDense: true,
+                                  ),
+                                  onSubmitted: (val) {
+                                    final msg = val.trim();
+                                    if (msg.isNotEmpty) {
+                                      chat.sendMessage(msg);
+                                      roomMsgController.clear();
+                                    }
+                                  },
                                 ),
-                                child: Text(chatLines[index], style: const TextStyle(fontSize: 16)),
-                              );
-                            },
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton(
+                                onPressed: () {
+                                  final msg = roomMsgController.text.trim();
+                                  if (msg.isNotEmpty) {
+                                    Provider.of<ChatSessionProvider>(context, listen: false).sendMessage(msg);
+                                    roomMsgController.clear();
+                                  }
+                                },
+                                child: const Text('Send'),
+                              )
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        // Show WS room messages (shared across invitees)
+                        Expanded(
+                          child: Consumer<ChatSessionProvider>(
+                            builder: (context, chat, _) => ListView.builder(
+                              itemCount: chat.messages.length,
+                              itemBuilder: (context, index) {
+                                final m = chat.messages[index];
+                                final isSystem = m.type == 'system';
+                                final text = isSystem ? '[system] ${m.message}' : '${m.sender ?? 'Guest'}: ${m.message}';
+                                return Container(
+                                  margin: const EdgeInsets.symmetric(vertical: 4),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 3)],
+                                  ),
+                                  child: Text(text, style: const TextStyle(fontSize: 16)),
+                                );
+                              },
+                            ),
                           ),
                         ),
                         const SizedBox(height: 10),
@@ -1892,7 +2015,7 @@ class _HomePageState extends State<HomePage> {
                               IconButton(
                                 icon: const Icon(Icons.send, color: Colors.blue),
                                 onPressed: sendTypedAsTTS,
-                                tooltip: 'Send as Text-to-Speech',
+                                tooltip: 'Share to room',
                               ),
                               IconButton(
                                 icon: Icon(isRecording ? Icons.stop_circle : Icons.mic),
