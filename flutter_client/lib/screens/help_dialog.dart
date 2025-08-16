@@ -29,14 +29,70 @@ class HelpDialog extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Tips',
+                "Here's a quick guide to get you started.",
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
+              const SizedBox(height: 12),
+              // Type to Speak Mode
+              const Text(
+                'Type to Speak Mode',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                "Choose this if you prefer to type. Your messages will be read aloud for others. By default, you won't hear incoming audio.",
+              ),
+              const SizedBox(height: 12),
+              // Speak to Type Mode
+              const Text(
+                'Speak to Type Mode',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Choose this if you prefer to talk. Your voice will be turned into text. You\'ll automatically hear messages from "Type to Speak" users.',
+              ),
+              const SizedBox(height: 12),
+              // Pro Tip
+              Row(
+                children: const [
+                  Icon(Icons.headset_mic_outlined, size: 18),
+                  SizedBox(width: 6),
+                  Text('Pro Tip for Better Audio', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                "For the best voice-to-text results, we recommend using a headset. If you're using your phone's built-in mic, make sure your phone is in speakerphone mode to help it pick up your voice clearly.",
+              ),
+              const SizedBox(height: 12),
+              // Inviting Friends
+              Row(
+                children: const [
+                  Icon(Icons.share_outlined, size: 18),
+                  SizedBox(width: 6),
+                  Text('Inviting Friends', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'To invite others to your current chat, click the Share icon in the header. You can share the link via text, email, or by letting them scan the QR code.',
+              ),
               const SizedBox(height: 8),
-              const Text('• Use the microphone button to record and transcribe speech.'),
-              const Text('• Toggle the Diagnostics tray from the menu to view logs and transcript.'),
-              const Text('• Create a Persona to personalize voice and behavior.'),
-              const SizedBox(height: 16),
+              Center(
+                child: TextButton.icon(
+                  onPressed: () {
+                    // TODO: Wire to actual bug/feature form or mailto link
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Bug/Feature Report: coming soon')),
+                    );
+                  },
+                  icon: const Icon(Icons.bug_report_outlined),
+                  label: const Text('Report a Bug or Request a Feature'),
+                ),
+              ),
+              const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(

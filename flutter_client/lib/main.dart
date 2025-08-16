@@ -275,6 +275,10 @@ class _HomePageState extends State<HomePage> {
   chat.addListener(_onChatUpdated);
   // Avoid replaying full history on first attach
   _lastHandledChatIndex = chat.messages.length - 1;
+
+  // Keep chat username synced with selected Persona
+  final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
+  personaProvider.addListener(_onPersonaChanged);
     });
     
     // Add callback for when connection is fully established
@@ -1382,6 +1386,19 @@ class _HomePageState extends State<HomePage> {
       }
       chat.sendMessage(text);
       appendTranscript('(You) $text');
+      // If user wants local playback of their own outgoing audio, play it now
+      final settings = Provider.of<SettingsProvider>(context, listen: false);
+      if (settings.playOutgoingAudio) {
+        try {
+          if (joined) {
+            js.context.callMethod('webrtcSendTTS', [text]);
+          } else {
+            // Fallback to direct API if WebRTC not ready
+            // ignore: unawaited_futures
+            useDirectTTS(text);
+          }
+        } catch (_) {}
+      }
     } catch (e) {
       appendTranscript('[error] Failed to send message to room: $e');
     } finally {
@@ -1637,6 +1654,18 @@ class _HomePageState extends State<HomePage> {
                 chat.connectToChatRoom(null);
               }
               chat.sendMessage(text);
+              // Optionally play outgoing audio locally if enabled
+              final settings = Provider.of<SettingsProvider>(context, listen: false);
+              if (settings.playOutgoingAudio) {
+                try {
+                  if (joined) {
+                    js.context.callMethod('webrtcSendTTS', [text]);
+                  } else {
+                    // ignore: unawaited_futures
+                    useDirectTTS(text);
+                  }
+                } catch (_) {}
+              }
             } catch (e) {
               appendTranscript('[error] Failed to post STT text to room: $e');
             }
@@ -1734,6 +1763,10 @@ class _HomePageState extends State<HomePage> {
     // Remove listeners
     final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
     settingsProvider.removeListener(_updateAudioSettings);
+    try {
+      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
+      personaProvider.removeListener(_onPersonaChanged);
+    } catch (_) {}
     // Remove chat listener
     try {
       final chat = Provider.of<ChatSessionProvider>(context, listen: false);
@@ -1745,6 +1778,17 @@ class _HomePageState extends State<HomePage> {
     inputController.dispose();
   roomController.dispose();
     super.dispose();
+  }
+
+  void _onPersonaChanged() {
+    try {
+      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
+      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+      final name = personaProvider.selectedPersona?.name;
+      if (name != null && name.isNotEmpty && chat.isConnected) {
+        chat.setUserName(name);
+      }
+    } catch (_) {}
   }
 
   // --- Drawer actions ---

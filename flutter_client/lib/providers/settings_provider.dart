@@ -4,10 +4,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 class SettingsProvider extends ChangeNotifier {
   bool _darkMode = false;
   bool _playIncomingAudio = true;
+  bool _playOutgoingAudio = false;
   String _avatarSeed = '';
 
   bool get darkMode => _darkMode;
   bool get playIncomingAudio => _playIncomingAudio;
+  bool get playOutgoingAudio => _playOutgoingAudio;
   String get avatarSeed => _avatarSeed;
 
   // Constructor - Load settings when provider is initialized
@@ -22,6 +24,7 @@ class SettingsProvider extends ChangeNotifier {
     // Load with defaults if not found
     _darkMode = prefs.getBool('darkMode') ?? false;
     _playIncomingAudio = prefs.getBool('playIncomingAudio') ?? true;
+  _playOutgoingAudio = prefs.getBool('playOutgoingAudio') ?? false;
     _avatarSeed = prefs.getString('avatarSeed') ?? '';
     
     notifyListeners();
@@ -47,6 +50,15 @@ class SettingsProvider extends ChangeNotifier {
     
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('playIncomingAudio', value);
+  }
+
+  // Toggle play outgoing audio
+  Future<void> setPlayOutgoingAudio(bool value) async {
+    if (_playOutgoingAudio == value) return;
+    _playOutgoingAudio = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('playOutgoingAudio', value);
   }
 
   // Update avatar seed

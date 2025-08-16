@@ -80,6 +80,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       _buildSectionHeader('Interaction'),
                       _buildInteractionModeSelector(),
                       _buildPlayIncomingAudioToggle(),
+                      _buildPlayOutgoingAudioToggle(),
                       const Divider(),
                       
                       // Profile Section
@@ -207,6 +208,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
           value: settingsProvider.playIncomingAudio,
           onChanged: (value) {
             settingsProvider.setPlayIncomingAudio(value);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildPlayOutgoingAudioToggle() {
+    return Consumer<SettingsProvider>(
+      builder: (context, settingsProvider, _) {
+        return SwitchListTile(
+          title: const Text('Play Outgoing Audio on This Device'),
+          subtitle: const Text('Hear your own messages on this device (off by default)'),
+          value: settingsProvider.playOutgoingAudio,
+          onChanged: (value) {
+            settingsProvider.setPlayOutgoingAudio(value);
           },
         );
       },
