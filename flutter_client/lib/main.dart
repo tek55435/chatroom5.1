@@ -82,9 +82,7 @@ class _HomePageState extends State<HomePage> {
   final List<String> chatLines = [];
 
   final roomController = TextEditingController(text: 'main');
-  final nameController = TextEditingController(text: 'Guest');
   final inputController = TextEditingController();
-  final TextEditingController roomMsgController = TextEditingController();
   
   // Log entries for the diagnostic panel
   final List<String> diagnosticLogs = [];
@@ -1133,13 +1131,14 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      // Connect chat backend (provider also auto-connects; this ensures timing after persona)
+      // Connect chat backend (ensures timing after persona)
       try {
         final chat = Provider.of<ChatSessionProvider>(context, listen: false);
         if (!chat.isConnected && !chat.isConnecting) {
           await chat.connectToChatRoom(null);
-          if (nameController.text.isNotEmpty) {
-            chat.setUserName(nameController.text);
+          final personaName = Provider.of<PersonaProvider>(context, listen: false).selectedPersona?.name;
+          if (personaName != null && personaName.isNotEmpty) {
+            chat.setUserName(personaName);
           }
         }
       } catch (_) {}
@@ -1744,9 +1743,7 @@ class _HomePageState extends State<HomePage> {
     // Dispose controllers
     transcriptController.dispose();
     inputController.dispose();
-  roomMsgController.dispose();
-    roomController.dispose();
-    nameController.dispose();
+  roomController.dispose();
     super.dispose();
   }
 
@@ -1941,41 +1938,7 @@ class _HomePageState extends State<HomePage> {
                       children: [
                         Text('Conversation', style: Theme.of(context).textTheme.headlineSmall),
                         const Divider(height: 20),
-                        // Simple "send to room" to verify WS broadcast works
-                        Consumer<ChatSessionProvider>(
-                          builder: (context, chat, _) => Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: roomMsgController,
-                                  decoration: const InputDecoration(
-                                    hintText: 'Type a message to send to the room (debug)',
-                                    isDense: true,
-                                  ),
-                                  onSubmitted: (val) {
-                                    final msg = val.trim();
-                                    if (msg.isNotEmpty) {
-                                      chat.sendMessage(msg);
-                                      roomMsgController.clear();
-                                    }
-                                  },
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton(
-                                onPressed: () {
-                                  final msg = roomMsgController.text.trim();
-                                  if (msg.isNotEmpty) {
-                                    Provider.of<ChatSessionProvider>(context, listen: false).sendMessage(msg);
-                                    roomMsgController.clear();
-                                  }
-                                },
-                                child: const Text('Send'),
-                              )
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 10),
+                        // Debug room message input removed
                         // Show WS room messages (shared across invitees)
                         Expanded(
                           child: Consumer<ChatSessionProvider>(
