@@ -19,9 +19,9 @@ class ChatSessionProvider extends ChangeNotifier {
   bool _isConnected = false;
   bool _isConnecting = false;
   String? _errorMessage;
-  bool _autoConnectStarted = false;
   Timer? _pollTimer;
   int _activeParticipants = 0;
+  int _connectedAtMs = 0;
 
   // Session properties
   List<ChatMessage> _messages = [];
@@ -40,18 +40,9 @@ class ChatSessionProvider extends ChangeNotifier {
   String? get clientId => _clientId;
   String? get userName => _userName;
   int get activeParticipants => _activeParticipants;
+  int get connectedAtMs => _connectedAtMs;
   
-  ChatSessionProvider() {
-    // Auto-connect once after provider is created, regardless of which screen loads
-    scheduleMicrotask(() async {
-      if (!_autoConnectStarted) {
-        _autoConnectStarted = true;
-        if (!_isConnected && !_isConnecting) {
-          await connectToChatRoom(null);
-        }
-      }
-    });
-  }
+  ChatSessionProvider();
   
   // Get the full share URL for the current session
   String getShareUrl() {
@@ -190,6 +181,7 @@ class ChatSessionProvider extends ChangeNotifier {
     _clientId = message['clientId'];
     _isConnected = true;
     _isConnecting = false;
+  _connectedAtMs = DateTime.now().millisecondsSinceEpoch;
   _startParticipantsPolling();
     
     // If we have a username, send it to the server
@@ -253,6 +245,7 @@ class ChatSessionProvider extends ChangeNotifier {
   void _handleDisconnect() {
     _isConnected = false;
     _isConnecting = false;
+  _connectedAtMs = 0;
   _stopParticipantsPolling();
     notifyListeners();
   }

@@ -1630,7 +1630,7 @@ class _HomePageState extends State<HomePage> {
           
           if (text != null && text.isNotEmpty) {
             appendTranscript('[success] Speech recognized: $text');
-            inputController.text = text;
+            // Do NOT populate the TTS input field; auto-post only
             // Auto-post recognized text to the shared chat; no local playback by default
             try {
               final chat = Provider.of<ChatSessionProvider>(context, listen: false);
@@ -1680,6 +1680,10 @@ class _HomePageState extends State<HomePage> {
       for (int i = start; i < chat.messages.length; i++) {
         final m = chat.messages[i];
         if (m.type != 'chat') {
+          continue;
+        }
+        // Play only messages that arrived after this client connected
+        if (chat.connectedAtMs > 0 && m.timestamp.millisecondsSinceEpoch < chat.connectedAtMs) {
           continue;
         }
         final isFromSelf = (m.clientId != null && m.clientId == chat.clientId);
