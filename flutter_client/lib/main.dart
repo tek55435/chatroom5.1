@@ -10,29 +10,25 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'providers/persona_provider.dart';
 import 'providers/settings_provider.dart';
-import 'providers/ephemeral_chat_provider.dart';
-import 'screens/persona_list_screen.dart';
+// Removed Ephemeral Chat imports per requirement
+// (unused here) import 'screens/persona_list_screen.dart';
 import 'screens/persona_creation_dialog.dart';
+// (unused here) import 'screens/settings_dialog.dart';
 import 'screens/settings_dialog.dart';
-import 'screens/ephemeral_chat_screen.dart';
+import 'screens/help_dialog.dart';
+import 'screens/persona_actions_dialog.dart';
+import 'widgets/app_menu_drawer.dart';
+import 'widgets/share_dialog.dart';
 
 void main() {
-  // Check if the URL has chat parameters
-  final uri = Uri.parse(html.window.location.href);
-  final hasSessionId = uri.queryParameters.containsKey('sessionId');
-  final chatMode = uri.queryParameters['chat'] == 'true';
-  
-  // Initial route based on URL parameters
-  final initialRoute = (hasSessionId && chatMode) ? '/chat' : '/';
-  
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PersonaProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
-        ChangeNotifierProvider(create: (_) => EphemeralChatProvider()),
+  // EphemeralChatProvider removed per requirement
       ],
-      child: MyApp(initialRoute: initialRoute),
+      child: const MyApp(),
     ),
   );
 }
@@ -40,9 +36,7 @@ void main() {
 const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
 
 class MyApp extends StatelessWidget {
-  final String initialRoute;
-  
-  const MyApp({super.key, this.initialRoute = '/'});
+  const MyApp({super.key});
   
   @override
   Widget build(BuildContext context) {
@@ -65,9 +59,7 @@ class MyApp extends StatelessWidget {
       themeMode: settingsProvider.darkMode ? ThemeMode.dark : ThemeMode.light,
       routes: {
         '/': (context) => const HomePage(),
-        '/chat': (context) => const EphemeralChatScreen(),
       },
-      initialRoute: initialRoute,
     );
   }
 }
@@ -108,7 +100,7 @@ class _HomePageState extends State<HomePage> {
   void _ensureSimpleRecorderInjected() {
     final has = js_util.hasProperty(html.window, 'SimpleRecorder');
     if (has) return;
-  final script = html.ScriptElement()
+    final script = html.ScriptElement()
       ..type = 'text/javascript'
       ..text = r'''
 (function(){
@@ -118,7 +110,6 @@ class _HomePageState extends State<HomePage> {
     this.mediaStream = null;
     this.processor = null;
     this.bufferL = [];
-    this.bufferR = [];
     this.length = 0;
     this.blob = null;
   }
@@ -126,16 +117,15 @@ class _HomePageState extends State<HomePage> {
     this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     this.mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
     const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-  const bufferSize = 4096;
-  const channels = 1; // mono for clearer STT
-  this.processor = this.audioContext.createScriptProcessor(bufferSize, channels, channels);
+    const bufferSize = 4096;
+    const channels = 1;
+    this.processor = this.audioContext.createScriptProcessor(bufferSize, channels, channels);
     this.bufferL = [];
-    this.bufferR = [];
     this.length = 0;
     this.processor.onaudioprocess = (e)=>{
-  const inL = e.inputBuffer.getChannelData(0);
-  this.bufferL.push(new Float32Array(inL));
-  this.length += inL.length;
+      const inL = e.inputBuffer.getChannelData(0);
+      this.bufferL.push(new Float32Array(inL));
+      this.length += inL.length;
     };
     source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
@@ -143,8 +133,8 @@ class _HomePageState extends State<HomePage> {
   SimpleRecorder.prototype.stop = async function(){
     if (this.processor){ this.processor.disconnect(); }
     if (this.mediaStream){ this.mediaStream.getTracks().forEach(t=>t.stop()); }
-  const left = mergeBuffers(this.bufferL, this.length);
-  const wav = encodeWAVMono(left, this.audioContext.sampleRate);
+    const left = mergeBuffers(this.bufferL, this.length);
+    const wav = encodeWAVMono(left, this.audioContext.sampleRate);
     this.blob = new Blob([wav], {type:'audio/wav'});
     return this.blob;
   };
@@ -194,6 +184,7 @@ class _HomePageState extends State<HomePage> {
 ''';
     html.document.head!.append(script);
   }
+  
   List<dynamic> audioChunks = [];
   bool isRecording = false;
   bool isTranscribing = false;
@@ -1643,15 +1634,7 @@ class _HomePageState extends State<HomePage> {
     });
   }
   
-  // Show settings dialog
-  void _showSettingsDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return const SettingsDialog();
-      },
-    );
-  }
+  // Settings dialog is now accessed via named route in the Drawer
   
   // Update audio settings based on user preferences
   void _updateAudioSettings() {
@@ -1680,6 +1663,76 @@ class _HomePageState extends State<HomePage> {
     roomController.dispose();
     nameController.dispose();
     super.dispose();
+  }
+
+  // --- Drawer actions ---
+  void _openInviteDialog() {
+    try {
+      final url = _buildShareUrl();
+      final sessionId = _extractSessionId(url) ?? 'unknown';
+      showDialog(
+        context: context,
+        builder: (_) => ShareDialog(sessionId: sessionId, shareUrl: url),
+      );
+    } catch (e) {
+      // ignore: avoid_print
+      print('Invite open failed: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open invite right now')),
+      );
+    }
+  }
+
+  void _openPersonaDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => const PersonaActionsDialog(),
+    );
+  }
+
+  void _openHelpDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => const HelpDialog(),
+    );
+  }
+
+  void _openSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => const SettingsDialog(),
+    );
+  }
+
+  void _toggleDiagnosticsTray() {
+    setState(() {
+      showDiagnosticPanel = !showDiagnosticPanel;
+    });
+  }
+
+  String _buildShareUrl() {
+    final base = html.window.location.href.split('?').first;
+    final sessionId = _extractSessionId(html.window.location.href) ?? _ensureSessionIdInUrl();
+    return '$base?sessionId=$sessionId';
+  }
+
+  String _ensureSessionIdInUrl() {
+    final uri = Uri.parse(html.window.location.href);
+    final existing = uri.queryParameters['sessionId'];
+    if (existing != null && existing.isNotEmpty) return existing;
+    final generated = DateTime.now().millisecondsSinceEpoch.toString();
+    final newUrl = '${uri.replace(queryParameters: {'sessionId': generated}).toString()}';
+    html.window.history.pushState(null, 'Chat Room $generated', newUrl);
+    return generated;
+  }
+
+  String? _extractSessionId(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final id = uri.queryParameters['sessionId'];
+      if (id != null && id.isNotEmpty) return id;
+    } catch (_) {}
+    return null;
   }
 
   // --- UI Helpers ---
@@ -1737,84 +1790,20 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Realtime Voice Chat'),
-        backgroundColor: Colors.blueGrey[900],
-        actions: [
-          // Settings button
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _showSettingsDialog,
-            tooltip: 'Settings',
+        title: const Text('My App'),
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu),
+            onPressed: () => Scaffold.of(context).openDrawer(),
           ),
-          // Help button (placeholder for now)
-          IconButton(
-            icon: const Icon(Icons.help_outline),
-            onPressed: () {
-              // Show help dialog (to be implemented)
-            },
-            tooltip: 'Help',
-          ),
-          // Chat button
-          IconButton(
-            icon: const Icon(Icons.chat),
-            onPressed: () {
-              Navigator.pushNamed(context, '/chat');
-            },
-            tooltip: 'Ephemeral Chat',
-          ),
-          // Share button (placeholder for now)
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              // Show share dialog (to be implemented)
-            },
-            tooltip: 'Share',
-          ),
-          // Persona management button
-          IconButton(
-            icon: const Icon(Icons.person_outline),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const PersonaListScreen()),
-              );
-            },
-            tooltip: 'Manage Persona',
-          ),
-          Center(child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Text(
-              joined ? 'Connected' : 'Disconnected',
-              style: TextStyle(fontSize: 16, color: joined ? Colors.greenAccent : Colors.orangeAccent),
-            ),
-          )),
-          if (!joined)
-            TextButton.icon(
-              icon: const Icon(Icons.login, color: Colors.white),
-              label: const Text('Join', style: TextStyle(color: Colors.white)),
-              onPressed: joinSession,
-            )
-          else
-            TextButton.icon(
-              icon: const Icon(Icons.logout, color: Colors.white),
-              label: const Text('Leave', style: TextStyle(color: Colors.white)),
-              onPressed: leaveSession,
-            ),
-          const SizedBox(width: 10),
-          IconButton(
-            icon: Icon(micOn ? Icons.mic : Icons.mic_off),
-            onPressed: joined ? (micOn ? stopMic : startMic) : null,
-            color: micOn ? Colors.redAccent : Colors.white,
-            tooltip: 'Toggle Microphone',
-          ),
-          IconButton(
-            icon: const Icon(Icons.build_circle_outlined),
-            onPressed: toggleDiagnosticPanel,
-            color: showDiagnosticPanel ? Colors.cyanAccent : Colors.white,
-            tooltip: 'Toggle Diagnostic Panel',
-          ),
-          const SizedBox(width: 10),
-        ],
+        ),
+      ),
+      drawer: AppMenuDrawer(
+        onInvite: _openInviteDialog,
+        onPersona: _openPersonaDialog,
+        onHelp: _openHelpDialog,
+        onSettings: _openSettingsDialog,
+        onDiagnostics: _toggleDiagnosticsTray,
       ),
       body: Column(
         children: [

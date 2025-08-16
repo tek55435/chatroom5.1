@@ -1,0 +1,207 @@
+// Removed fixed variant for Ephemeral Chat page per requirements.
+
+// screens/ephemeral_chat_screen.dart
+import 'dart:html' as html;
+import 'dart:js' as js;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+
+import '../providers/ephemeral_chat_provider.dart';
+import '../models/chat_message.dart';
+
+class EphemeralChatScreen extends StatefulWidget {
+  const EphemeralChatScreen({Key? key}) : super(key: key);
+
+  @override
+  State<EphemeralChatScreen> createState() => _EphemeralChatScreenState();
+}
+
+class _EphemeralChatScreenState extends State<EphemeralChatScreen> {
+  final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _usernameController = TextEditingController(text: 'Guest');
+  final ScrollController _scrollController = ScrollController();
+  bool _showConnectDialog = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    // Check if we should auto-connect from URL
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+      
+      // If there's a roomId in the URL and we're not connected, show the connect dialog
+      if (provider.hasRoomIdInUrl() && provider.status == ConnectionStatus.disconnected) {
+        setState(() {
+          _showConnectDialog = true;
+        });
+      }
+    });
+  }
+
+  @override
+  // Ephemeral Chat fixed variant removed. This file is intentionally blank.
+                      },
+                      child: const Text('CONNECT'),
+                    ),
+                ],
+              ),
+            ),
+            
+            // Chat messages
+            Expanded(
+              child: provider.status == ConnectionStatus.disconnected
+                  ? const Center(
+                      child: Text('Not connected to any chat room'),
+                    )
+                  : provider.messages.isEmpty
+                      ? const Center(
+                          child: Text('No messages yet'),
+                        )
+                      : ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          itemCount: provider.messages.length,
+                          itemBuilder: (context, index) {
+                            return _buildMessageBubble(provider.messages[index]);
+                          },
+                        ),
+            ),
+            
+            // Message input
+            if (provider.status == ConnectionStatus.connected)
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  border: Border(
+                    top: BorderSide(color: Colors.grey.shade300),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: const InputDecoration(
+                          hintText: 'Type a message',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: _sendMessage,
+                      color: Colors.blue,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+    final isMyMessage = message.senderName == provider.username;
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: isMyMessage ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.grey.shade300,
+              child: Text(
+                message.senderName.isNotEmpty ? message.senderName[0] : '?',
+                style: const TextStyle(color: Colors.black87),
+              ),
+            ),
+          if (!isMyMessage) const SizedBox(width: 8),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: isMyMessage ? Colors.blue : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Column(
+                crossAxisAlignment:
+                    isMyMessage ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                children: [
+                  if (!isMyMessage)
+                    Text(
+                      message.senderName,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isMyMessage ? Colors.white70 : Colors.black87,
+                      ),
+                    ),
+                  if (!isMyMessage) const SizedBox(height: 4),
+                  Text(
+                    message.content,
+                    style: TextStyle(
+                      color: isMyMessage ? Colors.white : Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _formatTimestamp(message.timestamp),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isMyMessage ? Colors.white70 : Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isMyMessage) const SizedBox(width: 8),
+          if (isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.blue.shade300,
+              child: Text(
+                message.senderName.isNotEmpty ? message.senderName[0] : '?',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final messageDate = DateTime(
+      timestamp.year,
+      timestamp.month,
+      timestamp.day,
+    );
+
+    if (messageDate == today) {
+      // Today, show only time
+      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    } else {
+      // Not today, show date and time
+      return '${timestamp.day}/${timestamp.month} ${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    }
+  }
+}

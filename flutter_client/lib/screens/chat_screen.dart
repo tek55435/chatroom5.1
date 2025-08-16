@@ -5,7 +5,10 @@ import 'dart:async';
 
 import '../providers/chat_session_provider.dart';
 import '../models/chat_message.dart';
+import '../widgets/app_menu_drawer.dart';
 import '../widgets/share_dialog.dart';
+import 'help_dialog.dart';
+import 'dart:html' as html;
 
 class ChatScreen extends StatefulWidget {
   final String? sessionId;
@@ -79,58 +82,9 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
   
-  // Set user name
-  void _setUserName() {
-    final name = _nameController.text.trim();
-    if (name.isEmpty) return;
-    
-    final provider = Provider.of<ChatSessionProvider>(context, listen: false);
-    provider.setUserName(name);
-    
-    Navigator.pop(context);
-  }
+  // Name is set through flows accessed from the Drawer.
   
-  // Show name dialog
-  void _showNameDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Enter Your Name'),
-        content: TextField(
-          controller: _nameController,
-          decoration: const InputDecoration(
-            hintText: 'Enter your display name',
-          ),
-          autofocus: true,
-          onSubmitted: (_) => _setUserName(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: _setUserName,
-            child: const Text('Set Name'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  // Show share dialog
-  void _showShareDialog() {
-    final provider = Provider.of<ChatSessionProvider>(context, listen: false);
-    if (!provider.isConnected) return;
-    
-    showDialog(
-      context: context,
-      builder: (context) => ShareDialog(
-        sessionId: provider.sessionId!,
-        shareUrl: provider.getShareUrl(),
-      ),
-    );
-  }
+  // Name dialog and sharing are now accessible via the Drawer.
   
   // Render a single chat message
   Widget _buildMessageItem(ChatMessage message) {
@@ -214,6 +168,13 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu),
+            tooltip: 'Menu',
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
+        ),
         title: Consumer<ChatSessionProvider>(
           builder: (context, provider, child) {
             if (provider.isConnecting) {
@@ -226,18 +187,17 @@ class _ChatScreenState extends State<ChatScreen> {
             );
           },
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person),
-            tooltip: 'Set Name',
-            onPressed: _showNameDialog,
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            tooltip: 'Share Room',
-            onPressed: _showShareDialog,
-          ),
-        ],
+      ),
+      drawer: AppMenuDrawer(
+        onInvite: () {
+          final base = html.window.location.href.split('?').first;
+          final uri = Uri.parse(html.window.location.href);
+          final sessionId = uri.queryParameters['sessionId'] ?? 'unknown';
+          final url = '$base?sessionId=$sessionId';
+          showDialog(context: context, builder: (_) => ShareDialog(sessionId: sessionId, shareUrl: url));
+        },
+        onHelp: () => showDialog(context: context, builder: (_) => const HelpDialog()),
+        onDiagnostics: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Open diagnostics from Home'))),
       ),
       body: Consumer<ChatSessionProvider>(
         builder: (context, provider, child) {

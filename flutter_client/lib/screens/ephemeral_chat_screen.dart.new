@@ -1,0 +1,565 @@
+// Ephemeral Chat new variant removed. This file is intentionally blank.
+  
+  void _showShareDialog() {
+    final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+    final url = provider.getShareableUrl();
+    
+    print('Share dialog opened with URL: $url');
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Share This Chat'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Share this link with others to join your chat session:',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      url,
+                      style: const TextStyle(fontFamily: 'monospace'),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.copy),
+                    tooltip: 'Copy to clipboard',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: url));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('URL copied to clipboard'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.share),
+              label: const Text('Share via...'),
+              onPressed: () {
+                Navigator.pop(context); // Close the dialog first
+                _shareUrl(url); // Then open the native share dialog
+              },
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 45),
+                backgroundColor: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextButton.icon(
+              icon: const Icon(Icons.close),
+              label: const Text('Close'),
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(double.infinity, 45),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _shareUrl(String url) async {
+    try {
+      print('Starting ultra-simple share process for URL: $url');
+      
+      // STRATEGY 1: Use the simple inline JavaScript function - MOST RELIABLE
+      try {
+        print('Using direct JS function directChatShare...');
+        js.context.callMethod('directChatShare', [url]);
+        return;
+      } catch (e) {
+        print('JS share failed, trying next method: $e');
+      }
+      
+      // STRATEGY 2: Try Flutter's Share.share
+      try {
+        print('Using Flutter Share.share...');
+        await Share.share(
+          url,
+          subject: 'Join my Ephemeral Chat session',
+        );
+        print('Share.share completed successfully');
+        return;
+      } catch (e) {
+        print('Share.share failed: $e');
+      }
+      
+      // STRATEGY 3: Direct clipboard copy
+      try {
+        print('Direct clipboard copy...');
+        await Clipboard.setData(ClipboardData(text: url));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Chat URL copied to clipboard'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      } catch (e) {
+        print('Clipboard API failed: $e');
+      }
+      
+      // STRATEGY 4: Show dialog with selectable text
+      print('Final fallback: Dialog with selectable text');
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Copy This Chat URL'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Copy this link to share with others:'),
+              const SizedBox(height: 10),
+              SelectableText(
+                url,
+                style: const TextStyle(fontFamily: 'monospace'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CLOSE'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      print('Unexpected error in _shareUrl: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to share: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // Helper to check if URL has room ID
+  bool _hasRoomIdInUrl() {
+    final uri = Uri.parse(html.window.location.href);
+    return uri.queryParameters.containsKey('sessionId') && 
+           uri.queryParameters['sessionId']!.isNotEmpty;
+  }
+  
+  void _scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Widget _buildConnectDialog(BuildContext context) {
+    final provider = Provider.of<EphemeralChatProvider>(context);
+    final isConnecting = provider.status == ConnectionStatus.connecting;
+    final hasRoomId = _hasRoomIdInUrl();
+    
+    return AlertDialog(
+      title: Text(hasRoomId ? 'Join Ephemeral Chat' : 'Create New Ephemeral Chat'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isConnecting)
+            const Column(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Connecting to chat...'),
+              ],
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  hasRoomId
+                      ? 'You\'re joining an existing chat session.'
+                      : 'You\'re creating a new ephemeral chat session.',
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _usernameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Your Display Name',
+                    hintText: 'Enter your display name',
+                    border: OutlineInputBorder(),
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Note: Chat messages are ephemeral and will be lost once you close the browser.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+        ],
+      ),
+      actions: [
+        if (!isConnecting)
+          TextButton(
+            onPressed: () {
+              setState(() => _showConnectDialog = false);
+              Navigator.pop(context);
+            },
+            child: const Text('CANCEL'),
+          ),
+        if (!isConnecting)
+          ElevatedButton(
+            onPressed: () {
+              final username = _usernameController.text.isNotEmpty ? _usernameController.text : 'Guest';
+              
+              // Connect to chat
+              final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+              provider.connectToSession();
+              
+              // Close dialog
+              setState(() => _showConnectDialog = false);
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+            ),
+            child: const Text('CONNECT'),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Ephemeral Chat'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () {
+              final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+              if (provider.status == ConnectionStatus.connected) {
+                _showShareDialog();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Connect to a chat room first'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            tooltip: 'Share this chat',
+          ),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('About Ephemeral Chat'),
+                  content: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('This is a simple ephemeral chat application.'),
+                      SizedBox(height: 8),
+                      Text('Messages exist only while participants are connected.'),
+                      SizedBox(height: 8),
+                      Text('No message history is stored on servers.'),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('CLOSE'),
+                    ),
+                  ],
+                ),
+              );
+            },
+            tooltip: 'About',
+          ),
+        ],
+      ),
+      floatingActionButton: Consumer<EphemeralChatProvider>(
+        builder: (context, provider, _) {
+          if (provider.status == ConnectionStatus.connected) {
+            return FloatingActionButton.extended(
+              onPressed: () {
+                print('FAB Share button pressed');
+                _showShareDialog();
+              },
+              label: const Text('Share Chat'),
+              icon: const Icon(Icons.share),
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            );
+          }
+          return const SizedBox.shrink();
+        },
+      ),
+      body: Consumer<EphemeralChatProvider>(builder: (context, provider, _) {
+        // If we need to show connect dialog
+        if (_showConnectDialog && provider.status == ConnectionStatus.disconnected) {
+          // Show it after the build is complete
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => _buildConnectDialog(context),
+            );
+          });
+        }
+        
+        // Scroll to bottom when messages change
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        
+        return Column(
+          children: [
+            // Connection status bar
+            Container(
+              color: provider.status == ConnectionStatus.connected
+                  ? Colors.green.shade100
+                  : provider.status == ConnectionStatus.connecting
+                      ? Colors.amber.shade100
+                      : Colors.red.shade100,
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(
+                    provider.status == ConnectionStatus.connected
+                        ? Icons.check_circle_outline
+                        : provider.status == ConnectionStatus.connecting
+                            ? Icons.hourglass_top
+                            : Icons.offline_bolt,
+                    color: provider.status == ConnectionStatus.connected
+                        ? Colors.green
+                        : provider.status == ConnectionStatus.connecting
+                            ? Colors.amber.shade800
+                            : Colors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    provider.status == ConnectionStatus.connected
+                        ? 'Connected as ${provider.username}'
+                        : provider.status == ConnectionStatus.connecting
+                            ? 'Connecting...'
+                            : 'Disconnected',
+                  ),
+                  const Spacer(),
+                  if (provider.status == ConnectionStatus.disconnected)
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _showConnectDialog = true;
+                        });
+                      },
+                      child: const Text('CONNECT'),
+                    ),
+                ],
+              ),
+            ),
+            
+            // Chat messages
+            Expanded(
+              child: provider.status == ConnectionStatus.disconnected
+                  ? const Center(
+                      child: Text('Not connected to any chat room'),
+                    )
+                  : provider.messages.isEmpty
+                      ? const Center(
+                          child: Text('No messages yet'),
+                        )
+                      : ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          itemCount: provider.messages.length,
+                          itemBuilder: (context, index) {
+                            return _buildMessageBubble(provider.messages[index]);
+                          },
+                        ),
+            ),
+            
+            // Message input
+            if (provider.status == ConnectionStatus.connected)
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  border: Border(
+                    top: BorderSide(color: Colors.grey.shade300),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: const InputDecoration(
+                          hintText: 'Type a message',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: _sendMessage,
+                      color: Colors.blue,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+    final isMyMessage = message.sender == provider.username || 
+                        (message.sender == null && message.clientId != null);
+    
+    // For system messages
+    if (message.type == 'system') {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              message.message,
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // For regular chat messages
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: isMyMessage ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.grey.shade300,
+              child: Text(
+                message.sender != null && message.sender!.isNotEmpty ? message.sender![0] : '?',
+                style: const TextStyle(color: Colors.black87),
+              ),
+            ),
+          if (!isMyMessage) const SizedBox(width: 8),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: isMyMessage ? Colors.blue : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Column(
+                crossAxisAlignment:
+                    isMyMessage ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                children: [
+                  if (!isMyMessage && message.sender != null)
+                    Text(
+                      message.sender!,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isMyMessage ? Colors.white70 : Colors.black87,
+                      ),
+                    ),
+                  if (!isMyMessage && message.sender != null) const SizedBox(height: 4),
+                  Text(
+                    message.message,
+                    style: TextStyle(
+                      color: isMyMessage ? Colors.white : Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _formatTimestamp(message.timestamp),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isMyMessage ? Colors.white70 : Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isMyMessage) const SizedBox(width: 8),
+          if (isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.blue.shade300,
+              child: Text(
+                provider.username.isNotEmpty ? provider.username[0] : '?',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final messageDate = DateTime(
+      timestamp.year,
+      timestamp.month,
+      timestamp.day,
+    );
+
+    if (messageDate == today) {
+      // Today, show only time
+      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    } else {
+      // Not today, show date and time
+      return '${timestamp.day}/${timestamp.month} ${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    }
+  }
+}

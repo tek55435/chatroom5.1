@@ -1,0 +1,207 @@
+// Removed backup file for Ephemeral Chat page per requirements.
+// Ephemeral Chat backup variant removed. This file is intentionally blank.
+        // Scroll to bottom when messages change
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        
+        return Column(
+          children: [
+            // Connection status bar
+            Container(
+              color: provider.status == ConnectionStatus.connected
+                  ? Colors.green.shade100
+                  : provider.status == ConnectionStatus.connecting
+                      ? Colors.amber.shade100
+                      : Colors.red.shade100,
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(
+                    provider.status == ConnectionStatus.connected
+                        ? Icons.check_circle_outline
+                        : provider.status == ConnectionStatus.connecting
+                            ? Icons.hourglass_top
+                            : Icons.offline_bolt,
+                    color: provider.status == ConnectionStatus.connected
+                        ? Colors.green
+                        : provider.status == ConnectionStatus.connecting
+                            ? Colors.amber.shade800
+                            : Colors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    provider.status == ConnectionStatus.connected
+                        ? 'Connected as ${provider.username}'
+                        : provider.status == ConnectionStatus.connecting
+                            ? 'Connecting...'
+                            : 'Disconnected',
+                  ),
+                  const Spacer(),
+                  if (provider.status == ConnectionStatus.disconnected)
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _showConnectDialog = true;
+                        });
+                      },
+                      child: const Text('CONNECT'),
+                    ),
+                ],
+              ),
+            ),
+            
+            // Chat messages
+            Expanded(
+              child: provider.status == ConnectionStatus.disconnected
+                  ? const Center(
+                      child: Text('Not connected to any chat room'),
+                    )
+                  : provider.messages.isEmpty
+                      ? const Center(
+                          child: Text('No messages yet'),
+                        )
+                      : ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          itemCount: provider.messages.length,
+                          itemBuilder: (context, index) {
+                            return _buildMessageBubble(provider.messages[index]);
+                          },
+                        ),
+            ),
+            
+            // Message input
+            if (provider.status == ConnectionStatus.connected)
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  border: Border(
+                    top: BorderSide(color: Colors.grey.shade300),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: const InputDecoration(
+                          hintText: 'Type a message',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: _sendMessage,
+                      color: Colors.blue,
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      }),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    final provider = Provider.of<EphemeralChatProvider>(context, listen: false);
+    final isMyMessage = message.senderName == provider.username;
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: isMyMessage ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.grey.shade300,
+              child: Text(
+                message.senderName.isNotEmpty ? message.senderName[0] : '?',
+                style: const TextStyle(color: Colors.black87),
+              ),
+            ),
+          if (!isMyMessage) const SizedBox(width: 8),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: isMyMessage ? Colors.blue : Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Column(
+                crossAxisAlignment:
+                    isMyMessage ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                children: [
+                  if (!isMyMessage)
+                    Text(
+                      message.senderName,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isMyMessage ? Colors.white70 : Colors.black87,
+                      ),
+                    ),
+                  if (!isMyMessage) const SizedBox(height: 4),
+                  Text(
+                    message.content,
+                    style: TextStyle(
+                      color: isMyMessage ? Colors.white : Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _formatTimestamp(message.timestamp),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isMyMessage ? Colors.white70 : Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isMyMessage) const SizedBox(width: 8),
+          if (isMyMessage)
+            CircleAvatar(
+              backgroundColor: Colors.blue.shade300,
+              child: Text(
+                message.senderName.isNotEmpty ? message.senderName[0] : '?',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final messageDate = DateTime(
+      timestamp.year,
+      timestamp.month,
+      timestamp.day,
+    );
+
+    if (messageDate == today) {
+      // Today, show only time
+      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    } else {
+      // Not today, show date and time
+      return '${timestamp.day}/${timestamp.month} ${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    }
+  }
+}

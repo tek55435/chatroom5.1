@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../models/user_persona.dart';
 import '../providers/persona_provider.dart';
 import '../services/voice_service.dart';
+import '../widgets/app_menu_drawer.dart';
+import 'help_dialog.dart';
 
 class CreatePersonaScreen extends StatefulWidget {
   const CreatePersonaScreen({Key? key}) : super(key: key);
@@ -42,7 +44,17 @@ class _CreatePersonaScreenState extends State<CreatePersonaScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu),
+            tooltip: 'Menu',
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
+        ),
         title: const Text('Create Persona'),
+      ),
+      drawer: AppMenuDrawer(
+        onHelp: () => showDialog(context: context, builder: (_) => const HelpDialog()),
       ),
       body: Form(
         key: _formKey,

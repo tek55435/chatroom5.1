@@ -61,7 +61,7 @@ class ShareDialog extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Invite others to join this ephemeral chat session',
+              'Invite others to join this chat session',
               style: TextStyle(
                 fontSize: 14,
                 color: Colors.grey[600],

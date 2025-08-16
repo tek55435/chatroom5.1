@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/user_persona.dart';
 import '../providers/persona_provider.dart';
 import 'create_persona_screen.dart';
 import 'edit_persona_screen.dart';
+import '../widgets/app_menu_drawer.dart';
+import '../widgets/share_dialog.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:html' as html;
+import 'help_dialog.dart';
 
 class PersonaListScreen extends StatelessWidget {
   const PersonaListScreen({Key? key}) : super(key: key);
@@ -12,7 +16,30 @@ class PersonaListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu),
+            tooltip: 'Menu',
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
+        ),
         title: const Text('Your Personas'),
+      ),
+      drawer: AppMenuDrawer(
+        onInvite: () {
+          final base = html.window.location.href.split('?').first;
+          final uri = Uri.parse(html.window.location.href);
+          final sessionId = uri.queryParameters['sessionId'] ?? 'unknown';
+          final url = '$base?sessionId=$sessionId';
+          showDialog(
+            context: context,
+            builder: (_) => ShareDialog(sessionId: sessionId, shareUrl: url),
+          );
+        },
+        onPersona: () => showDialog(context: context, builder: (_) => const HelpDialog()),
+        onHelp: () => showDialog(context: context, builder: (_) => const HelpDialog()),
+        onSettings: () => showDialog(context: context, builder: (_) => const HelpDialog()),
+        onDiagnostics: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Open diagnostics from Home'))),
       ),
       body: Consumer<PersonaProvider>(
         builder: (context, personaProvider, child) {
