@@ -6,11 +6,14 @@ yarn-error.log
 
 # Environment files
 .env
-.env.example
+# Track example templates; do NOT ignore .env.example so templates can be committed
+# .env.example
 .env.local
 .env.development
 .env.test
 .env.production
+openai_key.txt
+server/.env
 
 # Flutter/Dart
 .dart_tool/
