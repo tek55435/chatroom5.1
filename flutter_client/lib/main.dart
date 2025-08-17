@@ -1524,6 +1524,10 @@ class _HomePageState extends State<HomePage> {
             chosenType = 'audio/webm;codecs=opus';
           } else if (supports('audio/webm')) {
             chosenType = 'audio/webm';
+          } else if (supports('audio/mp4')) {
+            chosenType = 'audio/mp4'; // Safari/iOS
+          } else if (supports('audio/aac')) {
+            chosenType = 'audio/aac'; // Safari/iOS
           }
         }
       } catch (_) {}
@@ -1540,6 +1544,26 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (e) {
         appendTranscript('[error] Failed to construct MediaRecorder: $e');
+        // As a last resort, use the WAV fallback
+        _ensureSimpleRecorderInjected();
+        final ctor = js_util.getProperty(html.window, 'SimpleRecorder');
+        if (ctor != null) {
+          try {
+            simpleRecorder = js_util.callConstructor(ctor, const []);
+            final startPromise = js_util.callMethod(simpleRecorder, 'start', const []);
+            if (startPromise != null && js_util.hasProperty(startPromise, 'then')) {
+              await js_util.promiseToFuture(startPromise);
+            }
+            useSimpleRecorder = true;
+            fallbackBlob = null;
+            setState(() { isRecording = true; });
+            appendTranscript('[info] Fallback recording started. Speak now...');
+            return;
+          } catch (e2) {
+            appendTranscript('[error] Fallback recorder failed: $e2');
+            return;
+          }
+        }
         return;
       }
       audioChunks = [];
@@ -1631,12 +1655,26 @@ class _HomePageState extends State<HomePage> {
       // Create FormData
   // Build FormData using dart:html and append via JS interop (works for JS Blob types)
   final formData = html.FormData();
-  final fileName = useSimpleRecorder ? 'recording.wav' : 'recording.webm';
+  // Pick filename extension to hint server-side decoder
+  String fileName;
+  if (useSimpleRecorder) {
+    fileName = 'recording.wav';
+  } else {
+    // Try to infer if this is Safari/iOS (no webm), prefer m4a
+    final ua = html.window.navigator.userAgent.toLowerCase();
+    final isIOS = ua.contains('iphone') || ua.contains('ipad') || ua.contains('ipod');
+    final isSafari = ua.contains('safari') && !ua.contains('chrome');
+    if (isIOS || isSafari) {
+      fileName = 'recording.m4a';
+    } else {
+      fileName = 'recording.webm';
+    }
+  }
   js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
-      // Create XMLHttpRequest to handle the upload
-      final xhr = html.HttpRequest();
-      xhr.open('POST', 'http://localhost:3000/api/stt');
+  // Create XMLHttpRequest to handle the upload
+  final xhr = html.HttpRequest();
+  xhr.open('POST', '$SERVER_BASE/api/stt');
       
       // Set up completion handler
       xhr.onLoad.listen((event) {

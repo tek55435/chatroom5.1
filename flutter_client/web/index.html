@@ -11,6 +11,37 @@
       // Allow Flutter to log to console early if needed
       console.info("Starting Flutter Realtime TTS+STT app");
     </script>
+    <!-- Safari/iOS audio unlock helper -->
+    <script type="application/javascript">
+      (function () {
+        if (window.webrtcUnlockAudio) return;
+        function unlock() {
+          try {
+            var AC = window.AudioContext || window.webkitAudioContext;
+            if (AC) {
+              if (!window.__appAudioCtx) window.__appAudioCtx = new AC();
+              var ctx = window.__appAudioCtx;
+              if (ctx.state !== 'running' && ctx.resume) ctx.resume();
+              var b = ctx.createBuffer(1, 1, 22050);
+              var s = ctx.createBufferSource();
+              s.buffer = b; s.connect(ctx.destination); if (s.start) s.start(0);
+            }
+            var el = document.getElementById('remote-audio');
+            if (!el) { el = document.createElement('audio'); el.id = 'remote-audio'; document.body.appendChild(el); }
+            el.setAttribute('playsinline', '');
+            el.setAttribute('autoplay', '');
+            if (typeof el.play === 'function') { el.play().catch(function(){}); }
+          } catch (e) { console.warn('unlock audio failed', e); }
+          return true;
+        }
+        window.webrtcUnlockAudio = unlock;
+        // Optionally, auto-wire a one-time gesture listener
+        var handler = function(){ try{ unlock(); }catch(e){}; document.removeEventListener('pointerdown', handler); document.removeEventListener('touchend', handler); document.removeEventListener('click', handler); };
+        document.addEventListener('pointerdown', handler);
+        document.addEventListener('touchend', handler);
+        document.addEventListener('click', handler);
+      })();
+    </script>
     <!-- PCM helper for audio processing (namespaced version) -->
     <script src="pcm_helper_namespaced.js" type="application/javascript"></script>
     <!-- TTS WebRTC handler -->

@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../models/user_persona.dart';
 import '../providers/persona_provider.dart';
 import '../providers/settings_provider.dart';
+import '../providers/chat_session_provider.dart';
 import '../services/voice_service.dart';
 
 class PersonaCreationDialog extends StatefulWidget {
@@ -221,7 +222,7 @@ class _PersonaCreationDialogState extends State<PersonaCreationDialog> {
     );
   }
 
-  void _savePersona() {
+  Future<void> _savePersona() async {
     if (_formKey.currentState!.validate()) {
       final newPersona = UserPersona(
         id: const Uuid().v4(),
@@ -242,6 +243,17 @@ class _PersonaCreationDialogState extends State<PersonaCreationDialog> {
       
       // Configure audio defaults based on interaction mode
       Provider.of<SettingsProvider>(context, listen: false).setPlayIncomingAudio(!_isTypeToSpeakMode);
+
+      // Immediately create/join a chat room and set username
+      try {
+        final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+        if (!chat.isConnected && !chat.isConnecting) {
+          await chat.connectToChatRoom(null);
+        }
+        if (newPersona.name.isNotEmpty) {
+          chat.setUserName(newPersona.name);
+        }
+      } catch (_) {}
       
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Welcome, ${newPersona.name}!')),

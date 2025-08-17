@@ -11,6 +11,15 @@ import 'package:http/http.dart' as http;
 import '../models/chat_message.dart';
 
 class ChatSessionProvider extends ChangeNotifier {
+  // Configurable endpoints (override at build time with --dart-define)
+  static const String CHAT_WS = String.fromEnvironment(
+    'CHAT_WS',
+    defaultValue: 'ws://localhost:3001',
+  );
+  static const String CHAT_HTTP = String.fromEnvironment(
+    'CHAT_HTTP',
+    defaultValue: 'http://localhost:3001',
+  );
   // Connection properties
   WebSocketChannel? _channel;
   String? _sessionId;
@@ -26,9 +35,6 @@ class ChatSessionProvider extends ChangeNotifier {
   // Session properties
   List<ChatMessage> _messages = [];
   Map<String, String> _participants = {}; // clientId -> name
-  
-  // Constants
-  static const String _serverUrl = 'localhost:3001';
   
   // Getters
   bool get isConnected => _isConnected;
@@ -85,7 +91,7 @@ class ChatSessionProvider extends ChangeNotifier {
       
       // If still no sessionId, create a new session
       if (sessionId == null || sessionId.isEmpty) {
-        final response = await http.get(Uri.parse('http://$_serverUrl/api/chat/new-session'));
+        final response = await http.get(Uri.parse('$CHAT_HTTP/api/chat/new-session'));
         
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
@@ -99,8 +105,9 @@ class ChatSessionProvider extends ChangeNotifier {
         }
       }
       
-      // Connect to WebSocket with sessionId
-      final wsUri = Uri.parse('ws://$_serverUrl?sessionId=$sessionId');
+  // Connect to WebSocket with sessionId (supports ws:// or wss:// via CHAT_WS)
+  final separator = CHAT_WS.contains('?') ? '&' : '?';
+  final wsUri = Uri.parse('$CHAT_WS${separator}sessionId=$sessionId');
       _channel = WebSocketChannel.connect(wsUri);
       
       // Listen for incoming messages
@@ -262,7 +269,7 @@ class ChatSessionProvider extends ChangeNotifier {
     if (_sessionId == null || _sessionId!.isEmpty) return;
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       try {
-        final resp = await http.get(Uri.parse('http://$_serverUrl/api/chat/session/${_sessionId}/active'));
+  final resp = await http.get(Uri.parse('$CHAT_HTTP/api/chat/session/${_sessionId}/active'));
         if (resp.statusCode == 200) {
           final data = jsonDecode(resp.body);
           final count = (data['participants'] as num?)?.toInt() ?? 0;
