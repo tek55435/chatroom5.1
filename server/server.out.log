@@ -1,0 +1,8 @@
+Server listening on all interfaces on port 3000
+Server address: {"address":"0.0.0.0","family":"IPv4","port":3000}
+TTS API available at: http://localhost:3000/api/tts
+STT API available at: http://localhost:3000/api/stt
+Received TTS request
+Processing TTS request for text: "hello from test"
+TTS response received: 19680 bytes of MP3 audio
+Received STT request

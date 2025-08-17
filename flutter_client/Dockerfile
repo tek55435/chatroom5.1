@@ -5,7 +5,5 @@ FROM node:20-alpine AS build-env
 
 FROM nginx:alpine
 ENV PORT=8080
-COPY build/web /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
+REM Dockerfile contents removed per user request to undo deployment artifacts that required Artifact Registry permissions.
+REM If you need to recreate this later, restore from backup or follow DEPLOY-CLOUD-RUN.md instructions.

@@ -293,7 +293,8 @@ window.webrtcSendTTS = async function(text) {
     window.sendChatMessage(text);
     
     // Then use the TTS API to generate speech
-    const response = await fetch(`http://${window.location.hostname}:3000/api/tts`, {
+  const base = window.SERVER_BASE || window.location.origin;
+  const response = await fetch(`${base}/api/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 

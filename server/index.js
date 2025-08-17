@@ -24,13 +24,15 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-// Add detailed CORS configuration
+// CORS configuration: reflect request headers, allow all origins, no credentials (safer for Cloud Run)
 app.use(cors({
-  origin: '*',
+  origin: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  credentials: false,
+  optionsSuccessStatus: 204,
 }));
+// Ensure preflight requests are handled
+app.options('*', cors());
 app.use(express.json({ limit: "5mb" })); // for any JSON endpoints
 app.use(express.static(path.join(__dirname, "public"))); // serve Flutter web build from public folder
 

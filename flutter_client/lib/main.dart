@@ -42,6 +42,27 @@ String resolveServerBase() {
   try {
     final jsBase = js_util.getProperty(js.context, 'SERVER_BASE');
     if (jsBase is String && jsBase.isNotEmpty) {
+      // If the injected SERVER_BASE points to localhost but we're on HTTPS, try to infer the
+      // production API host by swapping -web- -> -api- in the current location host.
+      try {
+        final loc = html.window.location;
+            if (loc.protocol == 'https:' && jsBase.contains('localhost')) {
+              // If served over HTTPS and the injected base references localhost, prefer to infer
+              // the Cloud Run API host based on the current page host (swap -web- -> -api-).
+              try {
+                if (loc.host.contains('-web-')) {
+                  final apiHost = loc.host.replaceAll('-web-', '-api-');
+                  final inferred = '${loc.protocol}//$apiHost';
+                  try { js_util.setProperty(js.context, 'SERVER_BASE', inferred); } catch (_) {}
+                  try { js_util.callMethod(js.context['console'], 'log', ['[net] Resolved SERVER_BASE -> ' + inferred]); } catch (_) {}
+                  return inferred;
+                }
+              } catch (_) {}
+              // If we couldn't infer, upgrade scheme to https if necessary and return
+              if (jsBase.startsWith('http://')) return 'https://' + jsBase.substring('http://'.length);
+              return jsBase;
+            }
+      } catch (_) {}
       return jsBase;
     }
   } catch (_) {}
@@ -49,7 +70,14 @@ String resolveServerBase() {
   var base = SERVER_BASE;
   try {
     final loc = html.window.location;
-    if (loc.protocol == 'https:' && base.startsWith('http://')) {
+      if (loc.protocol == 'https:' && base.startsWith('http://')) {
+      // If compile-time base points at localhost and we're on a Cloud Run web host, infer API host
+      if (base.contains('localhost') && loc.host.contains('-web-')) {
+        final apiHost = loc.host.replaceAll('-web-', '-api-');
+        final inferred = '${loc.protocol}//$apiHost';
+        try { js_util.callMethod(js.context['console'], 'log', ['[net] Resolved compile-time SERVER_BASE -> ' + inferred]); } catch (_) {}
+        return inferred;
+      }
       base = 'https://' + base.substring('http://'.length);
     }
   } catch (_) {}
@@ -337,6 +365,39 @@ class _HomePageState extends State<HomePage> {
     
     // Make the server base URL available to JavaScript
     js.context['SERVER_BASE'] = SERVER_BASE;
+
+    // Runtime resolver: if compile-time SERVER_BASE points to localhost but
+    // the page is served over HTTPS (Cloud Run), try to infer the API host
+    // from the current hostname and set window.SERVER_BASE so Dart/XHR uses it.
+    js.context.callMethod('eval', [r'''
+      try {
+        if (window.SERVER_BASE && window.SERVER_BASE.indexOf('localhost') !== -1 && location.protocol === 'https:') {
+          const host = location.hostname || '';
+          let apiHost = host;
+          if (host.indexOf('-web-') !== -1) {
+            apiHost = host.replace('-web-','-api-');
+          } else if (host.indexOf('web') !== -1) {
+            apiHost = host.replace('web','api');
+          }
+          window.SERVER_BASE = 'https://' + apiHost;
+          console.log('[net] Resolved SERVER_BASE at runtime ->', window.SERVER_BASE);
+          if (window.dartAppendTranscript) window.dartAppendTranscript('[net] Resolved SERVER_BASE at runtime -> ' + window.SERVER_BASE);
+        } else {
+          console.log('[net] Using SERVER_BASE ->', window.SERVER_BASE);
+        }
+      } catch(e) { console.error('SERVER_BASE runtime resolver error', e); }
+    ''']);
+    // Unregister any old service workers to avoid stale cached main.dart.js
+    try {
+      js.context.callMethod('eval', ['''(function(){
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function(regs){
+            regs.forEach(function(r){ r.unregister().catch(function(){}); });
+            console.log('[net] Unregistered existing service workers');
+          }).catch(function(){});
+        }
+      })();''']);
+    } catch (_) {}
     // If we're on HTTPS and SERVER_BASE is insecure/localhost, try to infer/upgrade to an HTTPS API host
     js.context.callMethod('eval', ['''
       (function(){
@@ -358,7 +419,34 @@ class _HomePageState extends State<HomePage> {
       })();
     ''']);
 
-    // Install a one-time iOS/Safari audio unlock on first user interaction and replay any queued audio elements
+    // Add a deterministic runtime helper that returns the resolved API base.
+    // This is used by STT/TTS upload code to avoid using localhost when the page is served over HTTPS.
+    js.context.callMethod('eval', ['''
+      (function(){
+        try {
+          if (!window.resolveRuntimeServerBase) {
+            window.resolveRuntimeServerBase = function(){
+              try {
+                var b = window.SERVER_BASE || '';
+                var loc = window.location || { protocol: 'https:', host: '', origin: '' };
+                // If page is secure, try to avoid localhost targets
+                if (loc.protocol === 'https:') {
+                  if (b && b.indexOf('localhost') !== -1 && loc.host.indexOf('-web-') !== -1) {
+                    return loc.protocol + '//' + loc.host.replace('-web-', '-api-');
+                  }
+                  if (b && b.indexOf('http://') === 0) {
+                    return 'https://' + b.substring('http://'.length);
+                  }
+                }
+                if (b) return b;
+                return loc.origin || (loc.protocol + '//' + loc.host);
+              } catch(e) { return ''; }
+            };
+            try { console.log('[net] resolveRuntimeServerBase installed ->', window.resolveRuntimeServerBase()); } catch(_){}
+          }
+        } catch(e){}
+      })();
+    ''']);
     js.context.callMethod('eval', ['''
       (function(){
         if (window.__audioUnlockInstalled) return;
@@ -1558,9 +1646,21 @@ class _HomePageState extends State<HomePage> {
     try {
       appendTranscript('[info] Using direct TTS API: $text');
       
-      // Make HTTP request to our TTS endpoint
+      // Resolve server base at runtime (prefer window.SERVER_BASE when available)
+      String resolvedBase = resolveServerBase();
+      try {
+        final jsBase = js_util.getProperty(html.window, 'SERVER_BASE');
+        if (jsBase is String && jsBase.isNotEmpty) resolvedBase = jsBase;
+      } catch (_) {}
+      // Upgrade to https when page is secure
+      try {
+        if (html.window.location.protocol == 'https:' && resolvedBase.startsWith('http://')) {
+          resolvedBase = resolvedBase.replaceFirst('http://', 'https://');
+        }
+      } catch (_) {}
+
       final response = await http.post(
-  Uri.parse('${resolveServerBase()}/api/tts'),
+        Uri.parse('${resolvedBase.replaceAll(RegExp(r'/$'), '')}/api/tts'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'text': text}),
       );
@@ -1820,60 +1920,131 @@ class _HomePageState extends State<HomePage> {
   }
   js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
-  // Create XMLHttpRequest to handle the upload
-  final xhr = html.HttpRequest();
-  xhr.open('POST', '${resolveServerBase()}/api/stt');
-      
-      // Set up completion handler
-      xhr.onLoad.listen((event) {
-        if (xhr.status == 200) {
-          final result = json.decode(xhr.responseText ?? '{}');
-          final text = result['text'] as String?;
-          
-          if (text != null && text.isNotEmpty) {
-            appendTranscript('[success] Speech recognized: $text');
-            // Do NOT populate the TTS input field; auto-post only
-            // Auto-post recognized text to the shared chat; no local playback by default
-            try {
-              final chat = Provider.of<ChatSessionProvider>(context, listen: false);
-              if (!chat.isConnected && !chat.isConnecting) {
-                chat.connectToChatRoom(null);
-              }
-              chat.sendMessage(text);
-              // Optionally play outgoing audio locally if enabled
-              final settings = Provider.of<SettingsProvider>(context, listen: false);
-              if (settings.playOutgoingAudio) {
-                try {
-                  if (joined) {
-                    js.context.callMethod('webrtcSendTTS', [text]);
-                  } else {
-                    // ignore: unawaited_futures
-                    useDirectTTS(text);
-                  }
-                } catch (_) {}
-              }
-            } catch (e) {
-              appendTranscript('[error] Failed to post STT text to room: $e');
+      // Use fetch API for better CORS handling on Safari
+  // Prefer runtime JS resolver when available (helps avoid localhost when served over HTTPS)
+      String apiBase = resolveServerBase();
+      try {
+        final jsBase = js_util.getProperty(html.window, 'SERVER_BASE');
+        if (jsBase is String && jsBase.isNotEmpty) {
+          apiBase = jsBase;
+        }
+      } catch (_) {}
+      // If running on an HTTPS page, prefer an https scheme for the api base
+      try {
+        if (html.window.location.protocol == 'https:' && apiBase.startsWith('http://')) {
+          apiBase = apiBase.replaceFirst('http://', 'https://');
+        }
+      } catch (_) {}
+  // If the resolved base still points to localhost while page is https, try a best-effort inference
+  try {
+    if (apiBase.contains('localhost')) {
+      final loc = html.window.location;
+      if (loc.protocol == 'https:' && loc.host.contains('-web-')) {
+        final inferred = '${loc.protocol}//${loc.host.replaceAll('-web-', '-api-')}';
+        apiBase = inferred;
+        try { js_util.setProperty(js.context, 'SERVER_BASE', inferred); } catch (_) {}
+        appendTranscript('[diag] Inferred API base -> ' + apiBase);
+      }
+    }
+  } catch (_) {}
+
+  final apiUrl = '$apiBase/api/stt?ts=${DateTime.now().millisecondsSinceEpoch}';
+      appendTranscript('[diag] STT POST -> ' + apiUrl);
+      try {
+        // Defensive fetch via JS interop: guard against missing fetch, null promises, or unexpected shapes
+        final jsFetch = js_util.getProperty(js.context, 'fetch');
+        if (jsFetch == null) {
+          appendTranscript('[error] No fetch() available in this environment');
+          setState(() { isTranscribing = false; });
+          return;
+        }
+
+        final fetchOpts = js_util.jsify({
+          'method': 'POST',
+          'mode': 'cors',
+          'body': formData,
+        });
+
+        final fetchPromise = js_util.callMethod(js.context, 'fetch', [apiUrl, fetchOpts]);
+        if (fetchPromise == null) {
+          appendTranscript('[error] fetch() returned null promise');
+          setState(() { isTranscribing = false; });
+          return;
+        }
+
+        final resp = await js_util.promiseToFuture(fetchPromise);
+        if (resp == null) {
+          appendTranscript('[error] fetch() response was null');
+          setState(() { isTranscribing = false; });
+          return;
+        }
+
+        final okProp = js_util.getProperty(resp, 'ok');
+        final ok = okProp == true;
+        final statusProp = js_util.getProperty(resp, 'status');
+        final status = (statusProp is num) ? statusProp.toInt() : (statusProp is int ? statusProp : 0);
+
+        if (!ok) {
+          try {
+            final textPromise = js_util.callMethod(resp, 'text', const []);
+            final errText = textPromise != null ? await js_util.promiseToFuture(textPromise) : 'no body';
+            appendTranscript('[error] STT API error: ' + status.toString());
+            print('STT API error response: ' + (errText?.toString() ?? ''));
+          } catch (innerErr) {
+            appendTranscript('[error] STT API error and failed to read body');
+            print('STT API error and body read failed: ' + innerErr.toString());
+          }
+          setState(() { isTranscribing = false; });
+          return;
+        }
+
+        final jsonPromise = js_util.callMethod(resp, 'json', const []);
+        final result = jsonPromise != null ? await js_util.promiseToFuture(jsonPromise) : null;
+        if (result == null) {
+          appendTranscript('[error] STT API response missing JSON body');
+          setState(() { isTranscribing = false; });
+          return;
+        }
+
+        final text = js_util.getProperty(result, 'text') as String?;
+        if (text != null && text.isNotEmpty) {
+          appendTranscript('[success] Speech recognized: ' + text);
+          try {
+            final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+            if (!chat.isConnected && !chat.isConnecting) {
+              chat.connectToChatRoom(null);
             }
-          } else {
-            appendTranscript('[warning] No speech recognized');
+            chat.sendMessage(text);
+            final settings = Provider.of<SettingsProvider>(context, listen: false);
+            if (settings.playOutgoingAudio) {
+              try {
+                if (joined) {
+                  js.context.callMethod('webrtcSendTTS', [text]);
+                } else {
+                  // ignore: unawaited_futures
+                  useDirectTTS(text);
+                }
+              } catch (_) {}
+            }
+          } catch (e) {
+            appendTranscript('[error] Failed to send message: ' + e.toString());
           }
         } else {
-          appendTranscript('[error] STT API error: ${xhr.status}');
-          print('STT API error response: ${xhr.responseText}');
+          appendTranscript('[error] No text field in STT response');
         }
-  setState(() { isTranscribing = false; });
-      });
-      
-      // Set up error handler
-      xhr.onError.listen((event) {
-        appendTranscript('[error] STT API network error');
-        print('STT API network error: $event');
-  setState(() { isTranscribing = false; });
-      });
-      
-      // Send the request
-      xhr.send(formData);
+        setState(() { isTranscribing = false; });
+      } catch (netErr, stack) {
+        // Include stack trace to help locate null-check operator errors and show to user
+  final errMsg = netErr.toString();
+        appendTranscript('[error] STT API network error: ' + errMsg);
+        try {
+          final stackStr = stack.toString();
+          appendTranscript('[error] Stack trace: ' + (stackStr.split('\n').take(5).join(' | ')));
+          print('STT API network error: ' + errMsg);
+          print(stackStr);
+        } catch (_) {}
+        setState(() { isTranscribing = false; });
+      }
     } catch (e) {
       appendTranscript('[error] Exception converting speech to text: $e');
       print('Error with STT API: $e');
