@@ -1,15 +1,13 @@
 {
-  "name": "realtime-openai-proxy",
+  "name": "chatroom5-chat-ws",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node ephemeral-chat-server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "multer": "^2.0.2",
     "uuid": "^9.0.0",
     "ws": "^8.18.3"
   }
