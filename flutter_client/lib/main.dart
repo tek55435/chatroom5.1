@@ -37,6 +37,25 @@ void main() {
 
 const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
 
+// Resolve the API base at runtime, preferring window.SERVER_BASE and upgrading to https when needed
+String resolveServerBase() {
+  try {
+    final jsBase = js_util.getProperty(js.context, 'SERVER_BASE');
+    if (jsBase is String && jsBase.isNotEmpty) {
+      return jsBase;
+    }
+  } catch (_) {}
+  // Fallback to compile-time with an https upgrade if the page is https
+  var base = SERVER_BASE;
+  try {
+    final loc = html.window.location;
+    if (loc.protocol == 'https:' && base.startsWith('http://')) {
+      base = 'https://' + base.substring('http://'.length);
+    }
+  } catch (_) {}
+  return base;
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   
@@ -198,6 +217,9 @@ class _HomePageState extends State<HomePage> {
   bool micOn = false;
   bool _personaPrompted = false;
   int _lastHandledChatIndex = -1;
+  // iOS/Safari audio-unlock state
+  bool _audioUnlocked = false;
+  Timer? _audioPollTimer;
   
   // Function to test audio output
   void playTestSound() {
@@ -315,6 +337,78 @@ class _HomePageState extends State<HomePage> {
     
     // Make the server base URL available to JavaScript
     js.context['SERVER_BASE'] = SERVER_BASE;
+    // If we're on HTTPS and SERVER_BASE is insecure/localhost, try to infer/upgrade to an HTTPS API host
+    js.context.callMethod('eval', ['''
+      (function(){
+        try {
+          if (location.protocol === 'https:' && typeof window.SERVER_BASE === 'string') {
+            if (window.SERVER_BASE.startsWith('http://localhost')) {
+              var host = location.host;
+              var apiHost = host.replace('-web-', '-api-');
+              var inferred = location.protocol + '//' + apiHost;
+              console.log('[net] Overriding SERVER_BASE from localhost to inferred host:', inferred);
+              window.SERVER_BASE = inferred;
+            } else if (window.SERVER_BASE.startsWith('http://')) {
+              var upgraded = 'https://' + window.SERVER_BASE.substring('http://'.length);
+              console.log('[net] Upgrading SERVER_BASE to https:', upgraded);
+              window.SERVER_BASE = upgraded;
+            }
+          }
+        } catch (e) { console.warn('SERVER_BASE override check failed', e); }
+      })();
+    ''']);
+
+    // Install a one-time iOS/Safari audio unlock on first user interaction and replay any queued audio elements
+    js.context.callMethod('eval', ['''
+      (function(){
+        if (window.__audioUnlockInstalled) return;
+        window.__audioUnlockInstalled = true;
+        window.__pendingAudioElements = [];
+        window.__audioUnlocked = false;
+        function replayPending(){
+          try {
+            if (Array.isArray(window.__pendingAudioElements)) {
+              window.__pendingAudioElements.forEach(function(a){ try{ a.play().catch(()=>{});}catch(e){} });
+              window.__pendingAudioElements.length = 0;
+            }
+          } catch(e) {}
+        }
+        function unlock(){
+          try {
+            if (!window.audioContext) {
+              window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              window.audioQueue = [];
+              window.isPlayingAudio = false;
+            }
+            if (window.audioContext && window.audioContext.state !== 'running') {
+              window.audioContext.resume().then(function(){ window.__audioUnlocked = true; replayPending(); }).catch(()=>{});
+            }
+            var buf = window.audioContext.createBuffer(1,1,22050);
+            var src = window.audioContext.createBufferSource();
+            src.buffer = buf;
+            src.connect(window.audioContext.destination);
+            try { src.start(0); } catch(e){}
+            window.__audioUnlocked = true;
+            replayPending();
+          } catch(e) {}
+        }
+        // Expose a manual unlock so apps can show a visible button
+        window.__forceAudioUnlock = function(){ unlock(); };
+        window.addEventListener('touchend', unlock, { once: true, capture: true });
+        window.addEventListener('click', unlock, { once: true, capture: true });
+      })();
+    ''']);
+
+    // Periodically poll audio context state to reflect unlock status in UI
+    _audioPollTimer = Timer.periodic(const Duration(milliseconds: 800), (_) {
+      try {
+        final unlockedFlag = js_util.getProperty(js.context, '__audioUnlocked');
+        final unlocked = unlockedFlag == true;
+        if (unlocked != _audioUnlocked) {
+          if (mounted) setState(() { _audioUnlocked = unlocked; });
+        }
+      } catch (_) {}
+    });
     
     // Add our PCM helper script first
     final pcmHelperScript = html.ScriptElement();
@@ -347,12 +441,14 @@ class _HomePageState extends State<HomePage> {
           });
           
           // Set up ontrack handler
-          peerConnection.ontrack = (event) => {
+      peerConnection.ontrack = (event) => {
             console.log("Got remote track", event);
             if (event.streams && event.streams.length > 0) {
               const audioEl = document.createElement('audio');
               audioEl.autoplay = true;
               audioEl.controls = false;
+        // iOS Safari inline playback compliance
+        audioEl.playsInline = true;
               audioEl.srcObject = event.streams[0];
               document.body.appendChild(audioEl);
               appendToTranscript("Remote audio connected");
@@ -685,6 +781,12 @@ class _HomePageState extends State<HomePage> {
             if (!initialized) return false;
           }
           
+          // Ensure SDP includes audio by adding a recvonly transceiver
+          try {
+            if (peerConnection.getTransceivers().filter(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio').length === 0) {
+              peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+            }
+          } catch (_) {}
           // Create offer
           const offer = await peerConnection.createOffer({
             offerToReceiveAudio: true
@@ -698,7 +800,7 @@ class _HomePageState extends State<HomePage> {
           // Prefer window.SERVER_BASE injected from Dart, fallback to localhost:3000
           const serverUrl = (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') 
             ? window.SERVER_BASE 
-            : 'http://localhost:3000';
+            : window.location.origin;
           const fullUrl = `${serverUrl}/offer`;
           appendToTranscript(`Sending offer to: ${fullUrl}`);
           console.log("Server base from window:", window.SERVER_BASE);
@@ -723,9 +825,14 @@ class _HomePageState extends State<HomePage> {
             const errorText = await response.text();
             appendToTranscript(errorText);
             // Retry with backoff when server responds with error
-            const delay = Math.min(30000, 2000 * Math.max(1, attempt + 1));
+            const nextAttempt = attempt + 1;
+            if (nextAttempt > 5) {
+              appendToTranscript('[warning] Realtime bridge unavailable. Using HTTP TTS only.');
+              return false;
+            }
+            const delay = Math.min(30000, 2000 * Math.max(1, nextAttempt));
             appendToTranscript(`[retry] Join failed (HTTP ${response.status}). Retrying in ${Math.round(delay/1000)}s...`);
-            setTimeout(() => joinRTCSession(attempt + 1), delay);
+            setTimeout(() => joinRTCSession(nextAttempt), delay);
             return false;
           }
           
@@ -748,9 +855,14 @@ class _HomePageState extends State<HomePage> {
             appendToTranscript(`Fetch error: ${err.message}`);
             console.error("Fetch error:", err);
             // Retry with backoff if network error (server down/not yet started)
-            const delay = Math.min(30000, 2000 * Math.max(1, attempt + 1));
-            appendToTranscript(`[retry] Network error joining session. Retrying in ${Math.round(delay/1000)}s... (attempt ${attempt+1})`);
-            setTimeout(() => joinRTCSession(attempt + 1), delay);
+            const nextAttempt = attempt + 1;
+            if (nextAttempt > 5) {
+              appendToTranscript('[warning] Realtime bridge unavailable. Using HTTP TTS only.');
+              return false;
+            }
+            const delay = Math.min(30000, 2000 * Math.max(1, nextAttempt));
+            appendToTranscript(`[retry] Network error joining session. Retrying in ${Math.round(delay/1000)}s... (attempt ${nextAttempt})`);
+            setTimeout(() => joinRTCSession(nextAttempt), delay);
             return false;
           }
         } catch (err) {
@@ -1378,6 +1490,41 @@ class _HomePageState extends State<HomePage> {
       appendTranscript('[info] Cannot send empty message');
       return;
     }
+
+    // iOS/Safari: explicitly unlock audio in the same user gesture as the button press
+    try {
+      js.context.callMethod('eval', [r'''
+        (function(){
+          try {
+            if (!window.audioContext) {
+              window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              window.audioQueue = [];
+              window.isPlayingAudio = false;
+            }
+            if (window.audioContext && window.audioContext.state !== 'running') {
+              window.audioContext.resume().catch(()=>{});
+            }
+            // Create a muted inline audio element to help iOS permit playback
+            if (!window.__unlockAudioEl) {
+              var a = document.createElement('audio');
+              a.setAttribute('playsinline','true');
+              a.muted = true;
+              a.style.display = 'none';
+              document.body.appendChild(a);
+              window.__unlockAudioEl = a;
+            }
+            // Play a 1-frame silent buffer to unlock WebAudio
+            if (window.audioContext) {
+              var buf = window.audioContext.createBuffer(1, 1, 22050);
+              var src = window.audioContext.createBufferSource();
+              src.buffer = buf;
+              src.connect(window.audioContext.destination);
+              try { src.start(0); } catch(e){}
+            }
+          } catch (e) { console.warn('audio unlock failed', e); }
+        })();
+      ''']);
+    } catch (_) {}
     // Post to shared chat (so others hear it); do not play locally by default
     try {
       final chat = Provider.of<ChatSessionProvider>(context, listen: false);
@@ -1413,20 +1560,37 @@ class _HomePageState extends State<HomePage> {
       
       // Make HTTP request to our TTS endpoint
       final response = await http.post(
-        Uri.parse('http://localhost:3000/api/tts'),
+  Uri.parse('${resolveServerBase()}/api/tts'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'text': text}),
       );
       
       if (response.statusCode == 200) {
-        appendTranscript('[info] TTS API response received, playing audio...');
-        
-        // Play the audio using Web Audio API
-        final audioBlob = html.Blob([response.bodyBytes], 'audio/mpeg');
+        appendTranscript('[info] TTS API response received, preparing playback...');
+        // Prefer robust HTMLAudioElement with playsinline/autoplay, then queue if blocked
+        final bytes = response.bodyBytes;
+        final audioBlob = html.Blob([bytes], 'audio/mpeg');
         final audioUrl = html.Url.createObjectUrlFromBlob(audioBlob);
-        final audioElement = html.AudioElement()..src = audioUrl;
-        audioElement.play();
-        
+        final audioElement = html.AudioElement()
+          ..src = audioUrl
+          ..autoplay = true
+          ..muted = false
+          ..controls = false
+          ..preload = 'auto';
+        audioElement.setAttribute('playsinline', 'true');
+        // Keep it out of layout but attached to satisfy some iOS policies
+        audioElement.style.display = 'none';
+        html.document.body?.append(audioElement);
+        try { await audioElement.play(); } catch (_) {}
+        if (audioElement.paused) {
+          // Queue for replay after user unlock
+          try {
+            final pending = js_util.getProperty(js.context, '__pendingAudioElements');
+            if (pending != null) { js_util.callMethod(pending, 'push', [audioElement]); }
+          } catch(_){ }
+          appendTranscript('[info] Tap Enable sound to allow playback');
+          return;
+        }
         appendTranscript('[success] Direct TTS audio playing');
       } else {
         appendTranscript('[error] Failed to get TTS: ${response.statusCode}');
@@ -1459,29 +1623,13 @@ class _HomePageState extends State<HomePage> {
       dynamic stream = htmlStream;
       if (stream == null) {
         // JS fallback
-        final constraints = js_util.jsify({'audio': true, 'video': false});
-        final navigatorObj = js_util.getProperty(js.context, 'navigator');
-        if (navigatorObj == null) {
-          appendTranscript('[error] Navigator is not available in this context');
-          return;
-        }
-        final mediaDevices = js_util.getProperty(navigatorObj, 'mediaDevices');
-        if (mediaDevices == null) {
-          appendTranscript('[error] mediaDevices not available (insecure context?)');
-          return;
-        }
-        final jsGetUM = js_util.getProperty(mediaDevices, 'getUserMedia');
-        final isFunc = js_util.instanceof(jsGetUM, js.context['Function']);
-        if (!isFunc) {
-          appendTranscript('[error] mediaDevices.getUserMedia is not a function');
-          return;
-        }
-        final promise = js_util.callMethod(mediaDevices, 'getUserMedia', [constraints]);
-        // Some environments may return non-Promise; guard by checking for a 'then' property
-        if (promise != null && js_util.hasProperty(promise, 'then')) {
+        try {
+          final constraints = js_util.jsify({'audio': true, 'video': false});
+          final mediaDevices = js_util.getProperty(js.context, 'navigator.mediaDevices');
+          final promise = js_util.callMethod(mediaDevices, 'getUserMedia', [constraints]);
           stream = await js_util.promiseToFuture<dynamic>(promise);
-        } else {
-          appendTranscript('[error] getUserMedia did not return a Promise; cannot proceed');
+        } catch (e) {
+          appendTranscript('[error] getUserMedia failed: $e');
           return;
         }
       }
@@ -1674,7 +1822,7 @@ class _HomePageState extends State<HomePage> {
       
   // Create XMLHttpRequest to handle the upload
   final xhr = html.HttpRequest();
-  xhr.open('POST', '$SERVER_BASE/api/stt');
+  xhr.open('POST', '${resolveServerBase()}/api/stt');
       
       // Set up completion handler
       xhr.onLoad.listen((event) {
@@ -1815,6 +1963,8 @@ class _HomePageState extends State<HomePage> {
     transcriptController.dispose();
     inputController.dispose();
   roomController.dispose();
+  // Stop audio state polling
+  try { _audioPollTimer?.cancel(); } catch (_) {}
     super.dispose();
   }
 
@@ -1985,6 +2135,58 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Column(
         children: [
+          // iOS/Safari: visible CTA to enable sound if locked
+          if (!_audioUnlocked)
+            Container(
+              width: double.infinity,
+              color: Colors.amber.withOpacity(0.15),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.volume_off, size: 18, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Tap Enable sound to allow TTS playback on this device.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      try {
+                        // Unlock audio and request mic in the same gesture
+                        js.context.callMethod('__forceAudioUnlock', const []);
+                        // Request mic quickly (ignore failure silently)
+                        try {
+                          await html.window.navigator.mediaDevices?.getUserMedia({'audio': true});
+                        } catch (_) {}
+                        // Beep feedback
+                        js.context.callMethod('eval', ['''(function(){
+                          try {
+                            if (!window.audioContext) {
+                              window.audioContext = new (window.AudioContext||window.webkitAudioContext)();
+                            }
+                            var osc = window.audioContext.createOscillator();
+                            var gain = window.audioContext.createGain();
+                            osc.type = 'sine';
+                            osc.frequency.value = 660;
+                            gain.gain.value = 0.08;
+                            osc.connect(gain); gain.connect(window.audioContext.destination);
+                            osc.start(); setTimeout(()=>{ try{osc.stop();}catch(e){} }, 120);
+                          } catch(e){}
+                        })();''']);
+                      } catch (_) {}
+                      // Re-check right away
+                      try {
+                        final unlocked = js_util.getProperty(js.context, '__audioUnlocked') == true;
+                        if (mounted) setState(() { _audioUnlocked = unlocked; });
+                      } catch (_) {}
+                    },
+                    child: const Text('Enable sound + mic'),
+                  ),
+                ],
+              ),
+            ),
           // Room info/status bar
           Consumer<ChatSessionProvider>(
             builder: (context, chat, _) {

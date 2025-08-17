@@ -14,8 +14,9 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 const DEFAULT_MODEL = process.env.MODEL || "gpt-4o-realtime-preview-2024-12-17";
+const DEFAULT_VOICE = process.env.VOICE || "alloy";
 
 if (!OPENAI_API_KEY) {
   console.error("Missing OPENAI_API_KEY in server/.env — create server/.env from .env.example");
@@ -203,7 +204,7 @@ app.post("/offer", async (req, res) => {
   try {
     console.log("Request body:", JSON.stringify(req.body));
     const offerSdp = req.body?.sdp;
-    const model = req.body?.model || DEFAULT_MODEL;
+  const model = req.body?.model || DEFAULT_MODEL;
     console.log("Using model:", model);
     
     // Check if the offer includes audio capabilities
@@ -211,7 +212,7 @@ app.post("/offer", async (req, res) => {
       console.log("Offer includes audio capabilities");
       
       // Check the voice property being used
-      console.log("Using voice: alloy (default for TTS)");
+  console.log(`Using voice: ${DEFAULT_VOICE} (default)`);
       
       // Audio format checking
       if (offerSdp.includes("opus/48000/2")) {
@@ -382,7 +383,11 @@ app.post("/offer", async (req, res) => {
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model })
+      // Create session with supported fields only
+      body: JSON.stringify({
+        model,
+        voice: DEFAULT_VOICE
+      })
     });
 
     const sessText = await sessResp.text();
@@ -427,7 +432,13 @@ app.post("/offer", async (req, res) => {
     
     if (!realtimeResp.ok) {
       console.error("OpenAI Realtime handshake failed:", realtimeResp.status, realtimeText);
-      return res.status(502).send(realtimeText);
+      // Wrap upstream error for client visibility
+      try {
+        const json = JSON.parse(realtimeText);
+        return res.status(502).json({ error: "realtime-handshake-failed", detail: json });
+      } catch (_) {
+        return res.status(502).json({ error: "realtime-handshake-failed", detail: realtimeText });
+      }
     }
 
     console.log("Realtime API response (first 100 chars):", realtimeText.substring(0, 100) + "...");

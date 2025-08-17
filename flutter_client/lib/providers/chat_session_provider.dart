@@ -12,13 +12,14 @@ import '../models/chat_message.dart';
 
 class ChatSessionProvider extends ChangeNotifier {
   // Configurable endpoints (override at build time with --dart-define)
+  // Prefer secure defaults for production; override via --dart-define as needed
   static const String CHAT_WS = String.fromEnvironment(
     'CHAT_WS',
-    defaultValue: 'ws://localhost:3001',
+  defaultValue: 'wss://hearall-chat-zsqhr76csa-uc.a.run.app',
   );
   static const String CHAT_HTTP = String.fromEnvironment(
     'CHAT_HTTP',
-    defaultValue: 'http://localhost:3001',
+  defaultValue: 'https://hearall-chat-zsqhr76csa-uc.a.run.app',
   );
   // Connection properties
   WebSocketChannel? _channel;

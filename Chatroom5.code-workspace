@@ -4,5 +4,17 @@
 			"path": "."
 		}
 	],
-	"settings": {}
+	"settings": {},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Start Node server (install deps + run)",
+				"type": "shell",
+				"command": "powershell -NoProfile -Command \"Set-Location -Path 'C:\\Dev\\Chatroom5\\server'; if(Test-Path .env){ Write-Host '.env present' } else { Write-Host '.env missing' }; node -v; npm -v; if(Test-Path package-lock.json){ npm ci --no-audit --no-fund } else { npm install --no-audit --no-fund }; node index.js\"",
+				"isBackground": false,
+				"group": "build"
+			}
+		]
+	}
 }

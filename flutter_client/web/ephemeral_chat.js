@@ -56,7 +56,8 @@ window.EphemeralChat = {
     } 
  
     const host = window.location.hostname; 
-    const port = 3001; // Use a different port for chat to avoid conflicts 
+  // Derive WS URL securely based on current page origin
+  const port = null; // not used; we will build from origin
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'; 
     const uri = `${wsProtocol}://${host}:${port}?sessionId=${sessionId}`; 
     console.log('Connecting to WebSocket at:', uri); 

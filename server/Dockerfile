@@ -1,9 +1,11 @@
-# API server Cloud Run container
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --only=production
 COPY . .
-ENV PORT=8080
+# Flexible entrypoint: default to index.js, override with ENTRY_FILE env var (e.g., ephemeral-chat-server.js)
+ENV ENTRY_FILE=index.js
 EXPOSE 8080
-CMD ["node", "index.js"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+CMD ["/bin/sh", "/entrypoint.sh"]

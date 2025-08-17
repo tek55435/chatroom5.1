@@ -175,7 +175,7 @@ async function joinRTCSession(roomId) {
     console.log("Starting WebRTC session");
     
     // Determine server base URL
-    const serverUrl = window.SERVER_BASE || 'http://localhost:3000';
+  const serverUrl = window.SERVER_BASE || window.location.origin;
     const fullUrl = `${serverUrl}/offer`;
     console.log("Server base from window:", window.SERVER_BASE);
     console.log("Using server URL:", serverUrl);
