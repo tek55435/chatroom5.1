@@ -27,8 +27,8 @@ void main() {
       providers: [
         ChangeNotifierProvider(create: (_) => PersonaProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
-        ChangeNotifierProvider(create: (_) => ChatSessionProvider()),
-        // EphemeralChatProvider removed per requirement
+  ChangeNotifierProvider(create: (_) => ChatSessionProvider()),
+  // EphemeralChatProvider removed per requirement
       ],
       child: const MyApp(),
     ),
@@ -205,7 +205,7 @@ class _HomePageState extends State<HomePage> {
       function playTestBeep() {
         if (!window.audioContext) {
           try {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
             window.audioQueue = [];
             window.isPlayingAudio = false;
             console.log("Audio context created for test sound");
@@ -258,7 +258,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    // Auto-connect handled by ChatSessionProvider
+  // Auto-connect handled by ChatSessionProvider
     
     // Set up JavaScript functions to call back into Flutter
     js.context['dartAppendTranscript'] = (String text) {
@@ -270,15 +270,15 @@ class _HomePageState extends State<HomePage> {
       final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
       settingsProvider.addListener(_updateAudioSettings);
 
-      // Listen for new chat messages to optionally auto-play on this client
-      final chat = Provider.of<ChatSessionProvider>(context, listen: false);
-      chat.addListener(_onChatUpdated);
-      // Avoid replaying full history on first attach
-      _lastHandledChatIndex = chat.messages.length - 1;
+  // Listen for new chat messages to optionally auto-play on this client
+  final chat = Provider.of<ChatSessionProvider>(context, listen: false);
+  chat.addListener(_onChatUpdated);
+  // Avoid replaying full history on first attach
+  _lastHandledChatIndex = chat.messages.length - 1;
 
-      // Keep chat username synced with selected Persona
-      final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
-      personaProvider.addListener(_onPersonaChanged);
+  // Keep chat username synced with selected Persona
+  final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
+  personaProvider.addListener(_onPersonaChanged);
     });
     
     // Add callback for when connection is fully established
@@ -295,7 +295,7 @@ class _HomePageState extends State<HomePage> {
       js.context.callMethod('eval', ['''
         if (!window.audioContext) {
           try {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
             window.audioQueue = [];
             window.isPlayingAudio = false;
             console.log("Audio context explicitly initialized after connection");
@@ -451,7 +451,7 @@ class _HomePageState extends State<HomePage> {
                 // Initialize audio context and buffers if needed for upcoming audio chunks
                 if (!window.audioContext) {
                   try {
-                    window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
                     window.audioQueue = [];
                     window.isPlayingAudio = false;
                     appendToTranscript("[audio] Audio context initialized");
@@ -550,7 +550,7 @@ class _HomePageState extends State<HomePage> {
                       } else {
                         // Fall back to standard approach if helper not loaded
                         console.log("PCM helper not available, using standard approach");
-                        const context = new (window.AudioContext || window.webkitAudioContext)();
+                        const context = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
                         context.decodeAudioData(audioBuffer, 
                           (decoded) => {
                             const source = context.createBufferSource();
@@ -657,14 +657,14 @@ class _HomePageState extends State<HomePage> {
       }
       
       // Join session
-      async function joinRTCSession(attempt = 0) {
+  async function joinRTCSession(attempt = 0) {
         try {
           // Reset connection state
           connectionEstablished = false;
           
           // Initialize audio context early
           try {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
             window.audioQueue = [];
             window.isPlayingAudio = false;
             console.log("Audio context initialized during join");
@@ -850,7 +850,7 @@ class _HomePageState extends State<HomePage> {
         // Initialize audio context if it doesn't exist
         if (!window.audioContext) {
           try {
-            window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
             window.audioQueue = [];
             window.isPlayingAudio = false;
             console.log("Created audio context during TTS request");
@@ -873,7 +873,7 @@ class _HomePageState extends State<HomePage> {
           // Setup audio first
           if (!window.audioContext) {
             try {
-              window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+              window.audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
               window.audioQueue = [];
               window.isPlayingAudio = false;
               console.log("Audio context created before TTS request");
@@ -1121,9 +1121,9 @@ class _HomePageState extends State<HomePage> {
       window.webrtcSendTTS = sendTTS;
     ''';
     
-    html.document.body!.append(scriptEl);
+  html.document.body!.append(scriptEl);
 
-    // After first frame: ensure persona, then connect and join RTC
+  // After first frame: ensure persona, then connect and join RTC
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
       if (personaProvider.personas.isEmpty && !_personaPrompted) {
@@ -1150,7 +1150,7 @@ class _HomePageState extends State<HomePage> {
       // Join WebRTC session once bridge is ready
       js.context.callMethod('eval', ['''
         try {
-          setTimeout(() => { if (window.webrtcJoin) window.webrtcJoin(0); }, 0);
+      setTimeout(() => { if (window.webrtcJoin) window.webrtcJoin(0); }, 0);
         } catch (err) { console.error('Failed to join WebRTC:', err); }
       ''']);
     });
@@ -1413,7 +1413,7 @@ class _HomePageState extends State<HomePage> {
       
       // Make HTTP request to our TTS endpoint
       final response = await http.post(
-        Uri.parse('$SERVER_BASE/api/tts'),
+        Uri.parse('http://localhost:3000/api/tts'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'text': text}),
       );
@@ -1442,10 +1442,10 @@ class _HomePageState extends State<HomePage> {
   void startRecording() async {
     appendTranscript('[info] Starting audio recording for STT...');
     try {
-      // Environment diagnostics
-      final isSecure = js_util.getProperty(html.window, 'isSecureContext') == true;
-      appendTranscript('[diag] isSecureContext=$isSecure');
-      appendTranscript('[diag] navigator present=true');
+  // Environment diagnostics
+  final isSecure = js_util.getProperty(html.window, 'isSecureContext') == true;
+  appendTranscript('[diag] isSecureContext=$isSecure');
+  appendTranscript('[diag] navigator present=true');
 
       // Prefer using dart:html typed API to obtain a MediaStream (avoids JS Promise interop pitfalls)
       html.MediaStream? htmlStream;
@@ -1487,8 +1487,8 @@ class _HomePageState extends State<HomePage> {
       }
 
       // Check MediaRecorder support via window object (more reliable)
-      final mediaRecorderCtor = js_util.getProperty(html.window, 'MediaRecorder');
-      appendTranscript('[diag] typeof MediaRecorder=' + (mediaRecorderCtor == null ? 'null' : 'function'));
+  final mediaRecorderCtor = js_util.getProperty(html.window, 'MediaRecorder');
+  appendTranscript('[diag] typeof MediaRecorder=' + (mediaRecorderCtor == null ? 'null' : 'function'));
       if (mediaRecorderCtor == null) {
         // Inject and use a JS fallback recorder (ScriptProcessor → WAV)
         _ensureSimpleRecorderInjected();
@@ -1515,7 +1515,7 @@ class _HomePageState extends State<HomePage> {
       }
 
       // Choose a supported mimeType if available
-      String? chosenType;
+  String? chosenType;
       try {
         final isTypeSupported = js_util.getProperty(mediaRecorderCtor, 'isTypeSupported');
         if (isTypeSupported != null) {
@@ -1532,7 +1532,7 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (_) {}
 
-      appendTranscript('[diag] chosen mimeType=' + (chosenType ?? 'default'));
+  appendTranscript('[diag] chosen mimeType=' + (chosenType ?? 'default'));
 
       // Create MediaRecorder(stream)
       try {
@@ -1653,28 +1653,28 @@ class _HomePageState extends State<HomePage> {
       }
       
       // Create FormData
-      // Build FormData using dart:html and append via JS interop (works for JS Blob types)
-      final formData = html.FormData();
-      // Pick filename extension to hint server-side decoder
-      String fileName;
-      if (useSimpleRecorder) {
-        fileName = 'recording.wav';
-      } else {
-        // Try to infer if this is Safari/iOS (no webm), prefer m4a
-        final ua = html.window.navigator.userAgent.toLowerCase();
-        final isIOS = ua.contains('iphone') || ua.contains('ipad') || ua.contains('ipod');
-        final isSafari = ua.contains('safari') && !ua.contains('chrome');
-        if (isIOS || isSafari) {
-          fileName = 'recording.m4a';
-        } else {
-          fileName = 'recording.webm';
-        }
-      }
-      js_util.callMethod(formData, 'append', ['file', blob, fileName]);
+  // Build FormData using dart:html and append via JS interop (works for JS Blob types)
+  final formData = html.FormData();
+  // Pick filename extension to hint server-side decoder
+  String fileName;
+  if (useSimpleRecorder) {
+    fileName = 'recording.wav';
+  } else {
+    // Try to infer if this is Safari/iOS (no webm), prefer m4a
+    final ua = html.window.navigator.userAgent.toLowerCase();
+    final isIOS = ua.contains('iphone') || ua.contains('ipad') || ua.contains('ipod');
+    final isSafari = ua.contains('safari') && !ua.contains('chrome');
+    if (isIOS || isSafari) {
+      fileName = 'recording.m4a';
+    } else {
+      fileName = 'recording.webm';
+    }
+  }
+  js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
-      // Create XMLHttpRequest to handle the upload
-      final xhr = html.HttpRequest();
-      xhr.open('POST', '$SERVER_BASE/api/stt');
+  // Create XMLHttpRequest to handle the upload
+  final xhr = html.HttpRequest();
+  xhr.open('POST', '$SERVER_BASE/api/stt');
       
       // Set up completion handler
       xhr.onLoad.listen((event) {
@@ -1714,14 +1714,14 @@ class _HomePageState extends State<HomePage> {
           appendTranscript('[error] STT API error: ${xhr.status}');
           print('STT API error response: ${xhr.responseText}');
         }
-        setState(() { isTranscribing = false; });
+  setState(() { isTranscribing = false; });
       });
       
       // Set up error handler
       xhr.onError.listen((event) {
         appendTranscript('[error] STT API network error');
         print('STT API network error: $event');
-        setState(() { isTranscribing = false; });
+  setState(() { isTranscribing = false; });
       });
       
       // Send the request
@@ -1729,7 +1729,7 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       appendTranscript('[error] Exception converting speech to text: $e');
       print('Error with STT API: $e');
-      setState(() { isTranscribing = false; });
+  setState(() { isTranscribing = false; });
     }
   }
 
@@ -1814,7 +1814,7 @@ class _HomePageState extends State<HomePage> {
     // Dispose controllers
     transcriptController.dispose();
     inputController.dispose();
-    roomController.dispose();
+  roomController.dispose();
     super.dispose();
   }
 

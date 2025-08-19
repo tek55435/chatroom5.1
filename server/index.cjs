@@ -1,12 +1,13 @@
 // HearAll Chat Server - Main entry point
 // This server provides WebRTC signaling, STT/TTS APIs, and serves the Flutter web client
 
-require('dotenv').config();
+// Force-load environment from server/.env regardless of CWD
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
-const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const { promisify } = require('util');
@@ -14,6 +15,7 @@ const { promisify } = require('util');
 // Configuration
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const DEFAULT_MODEL = process.env.MODEL || 'gpt-4o-realtime-preview-2024-12-17';
 const LOG_DIR = path.join(__dirname, 'logs');
 
 // Create log directory if it doesn't exist
@@ -23,8 +25,14 @@ if (!fs.existsSync(LOG_DIR)) {
 
 // Set up Express app
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
+// Increase JSON body limit to allow large SDP blobs
+app.use(express.json({ limit: '5mb' }));
 
 // Set up upload handling for audio files
 const storage = multer.memoryStorage();
@@ -257,6 +265,85 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
+// WebRTC Realtime offer endpoint (restores /offer route)
+// Accepts JSON { sdp: "<offer.sdp>", model?: "<model>" }
+// Creates ephemeral session, posts offer to OpenAI Realtime using ephemeral token,
+// returns raw answer SDP as text (Content-Type: application/sdp).
+app.post('/offer', async (req, res) => {
+  try {
+    console.log('Received POST to /offer');
+    const offerSdp = req.body && req.body.sdp;
+    const model = (req.body && req.body.model) || DEFAULT_MODEL;
+
+    if (!offerSdp || typeof offerSdp !== 'string') {
+      return res.status(400).json({ error: 'missing offer.sdp in body' });
+    }
+
+    if (!OPENAI_API_KEY) {
+      console.error('OPENAI_API_KEY is not set');
+      return res.status(500).json({ error: 'server_not_configured', detail: 'Missing OPENAI_API_KEY' });
+    }
+
+    // 1) Create ephemeral session
+    const sessResp = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model })
+    });
+
+    const sessText = await sessResp.text();
+    if (!sessResp.ok) {
+      console.error('Failed to create ephemeral session:', sessResp.status, sessText);
+      return res.status(502).json({ error: 'Failed to create ephemeral session', detail: sessText });
+    }
+
+    let sessJson;
+    try {
+      sessJson = JSON.parse(sessText);
+    } catch (e) {
+      console.error('Session returned non-json:', sessText);
+      return res.status(502).json({ error: 'Session returned non-json', detail: sessText });
+    }
+
+    const ephemeral = sessJson && sessJson.client_secret && sessJson.client_secret.value;
+    if (!ephemeral) {
+      console.error('No ephemeral token in session response:', sessJson);
+      return res.status(502).json({ error: 'No ephemeral token returned', detail: sessJson });
+    }
+
+    // 2) Post offer SDP to OpenAI Realtime with ephemeral token
+    const realtimeUrl = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+    const realtimeResp = await fetch(realtimeUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ephemeral}`,
+        'Content-Type': 'application/sdp'
+      },
+      body: offerSdp
+    });
+
+    const realtimeText = await realtimeResp.text();
+    if (!realtimeResp.ok) {
+      console.error('OpenAI Realtime handshake failed:', realtimeResp.status, realtimeText);
+      return res.status(502).send(realtimeText);
+    }
+
+    res.setHeader('Content-Type', 'application/sdp');
+    return res.status(200).send(realtimeText);
+  } catch (err) {
+    console.error('/offer error', err);
+    return res.status(500).json({ error: 'internal', detail: String(err && err.message ? err.message : err) });
+  }
+});
+
+// Provide a friendly response for accidental GETs to /offer to avoid 404 confusion
+app.get('/offer', (req, res) => {
+  res.status(405).json({ error: 'method_not_allowed', detail: 'Use POST /offer with JSON body { sdp, model? }' });
+});
+
 // API route for Speech-to-Text
 app.post('/api/stt', upload.single('audio'), async (req, res) => {
   try {
@@ -310,6 +397,17 @@ function generateSilence(durationSec, sampleRate = 44100) {
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Health check endpoint to verify env and basic config
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    openaiKeyPresent: Boolean(process.env.OPENAI_API_KEY),
+    model: DEFAULT_MODEL,
+    port: Number(PORT),
+    timestamp: Date.now(),
+  });
+});
+
 // Serve Flutter web app (for production)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -338,4 +436,6 @@ app.get("/", (req, res) => {
 // Start the server
 server.listen(PORT, () => {
   console.log(`HearAll server is running on http://localhost:${PORT}`);
+  console.log('Routes: POST /offer (SDP handshake), GET /offer (405 helper), POST /api/tts, POST /api/stt');
+  console.log(`Health: GET http://localhost:${PORT}/api/health`);
 });
