@@ -414,7 +414,7 @@ function makeTTSRequest(text, voice = 'alloy') {
   });
 }
 
-// WebRTC Realtime offer endpoint - CORRECTED FOR WEBSOCKET API
+// WebRTC Realtime offer endpoint - DYNAMIC SDP MATCHING
 mainApp.post('/offer', express.json({ limit: '5mb' }), async (req, res) => {
   try {
     console.log('[webrtc] Processing offer request');
@@ -439,31 +439,137 @@ mainApp.post('/offer', express.json({ limit: '5mb' }), async (req, res) => {
       return res.status(400).json({ error: 'invalid_sdp_format', detail: 'SDP must start with v=' });
     }
 
-    console.log('[webrtc] Valid SDP received. Note: OpenAI Realtime API uses WebSocket, not REST endpoints for WebRTC.');
+    console.log('[webrtc] Valid SDP received, parsing offer structure...');
     
-    // For now, return a simple SDP answer that indicates WebSocket connection is needed
-    // In a real implementation, this would establish a WebSocket connection to OpenAI
-    const mockAnswerSdp = `v=0
-o=openai 0 0 IN IP4 127.0.0.1
-s=OpenAI Realtime Session
-t=0 0
-a=group:BUNDLE audio
-m=audio 9 UDP/TLS/RTP/SAVPF 111
-c=IN IP4 127.0.0.1
-a=rtcp:9 IN IP4 127.0.0.1
-a=ice-ufrag:mock
-a=ice-pwd:mock
-a=fingerprint:sha-256 AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA
-a=setup:active
-a=mid:audio
-a=sendrecv
-a=rtcp-mux
-a=rtpmap:111 opus/48000/2
-a=fmtp:111 minptime=10;useinbandfec=1`;
-
-    console.log('[webrtc] Returning mock SDP answer for testing purposes');
+    // Parse the offer SDP to extract structure and ordering
+    const offerLines = offerSdp.trim().split(/\r?\n/);
+    const mediaLines = [];
+    const bundleGroup = [];
+    let currentMediaSection = null;
+    
+    // First pass: extract media sections and their order
+    for (let i = 0; i < offerLines.length; i++) {
+      const line = offerLines[i];
+      
+      if (line.startsWith('m=')) {
+        // Save previous media section
+        if (currentMediaSection) {
+          mediaLines.push(currentMediaSection);
+        }
+        
+        // Start new media section
+        const mediaMatch = line.match(/m=(\w+) (\d+) ([\w\/]+) (.+)/);
+        if (mediaMatch) {
+          currentMediaSection = {
+            type: mediaMatch[1], // audio, video, etc.
+            port: mediaMatch[2],
+            protocol: mediaMatch[3],
+            codecs: mediaMatch[4].split(' '),
+            mid: null,
+            attributes: []
+          };
+        }
+      } else if (line.startsWith('a=mid:') && currentMediaSection) {
+        currentMediaSection.mid = line.split(':')[1];
+        if (!bundleGroup.includes(currentMediaSection.mid)) {
+          bundleGroup.push(currentMediaSection.mid);
+        }
+      } else if (line.startsWith('a=') && currentMediaSection) {
+        currentMediaSection.attributes.push(line);
+      }
+    }
+    
+    // Add the last media section
+    if (currentMediaSection) {
+      mediaLines.push(currentMediaSection);
+    }
+    
+    console.log('[webrtc] Parsed', mediaLines.length, 'media sections:', 
+                mediaLines.map(m => `${m.type}(${m.mid})`).join(', '));
+    
+    // Generate answer SDP that exactly matches the offer structure
+    const sessionId = Math.floor(Math.random() * 1000000000);
+    const answerLines = [];
+    
+    // Standard SDP headers
+    answerLines.push('v=0');
+    answerLines.push(`o=- ${sessionId} 2 IN IP4 127.0.0.1`);
+    answerLines.push('s=-');
+    answerLines.push('t=0 0');
+    
+    // Bundle group in the same order as the offer
+    if (bundleGroup.length > 0) {
+      answerLines.push(`a=group:BUNDLE ${bundleGroup.join(' ')}`);
+    }
+    
+    answerLines.push('a=extmap-allow-mixed');
+    answerLines.push('a=msid-semantic: WMS');
+    
+    // Generate media sections in the same order as the offer
+    for (const mediaSection of mediaLines) {
+      if (mediaSection.type === 'audio') {
+        // Accept audio with proper codec negotiation
+        const preferredCodec = mediaSection.codecs.includes('111') ? '111' : mediaSection.codecs[0];
+        answerLines.push(`m=audio 9 UDP/TLS/RTP/SAVPF ${mediaSection.codecs.join(' ')}`);
+        answerLines.push('c=IN IP4 0.0.0.0');
+        answerLines.push('a=rtcp:9 IN IP4 0.0.0.0');
+        answerLines.push('a=ice-ufrag:test');
+        answerLines.push('a=ice-pwd:testpassword123456789012');
+        answerLines.push('a=ice-options:trickle');
+        answerLines.push('a=fingerprint:sha-256 12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0');
+        answerLines.push('a=setup:active');
+        answerLines.push(`a=mid:${mediaSection.mid}`);
+        answerLines.push('a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level');
+        answerLines.push('a=sendrecv');
+        answerLines.push('a=rtcp-mux');
+        
+        // Add codec mappings based on what the client offered
+        for (const codec of mediaSection.codecs) {
+          switch (codec) {
+            case '111':
+              answerLines.push('a=rtpmap:111 opus/48000/2');
+              answerLines.push('a=fmtp:111 minptime=10;useinbandfec=1');
+              break;
+            case '103':
+              answerLines.push('a=rtpmap:103 ISAC/16000');
+              break;
+            case '9':
+              answerLines.push('a=rtpmap:9 G722/8000');
+              break;
+            case '0':
+              answerLines.push('a=rtpmap:0 PCMU/8000');
+              break;
+            case '8':
+              answerLines.push('a=rtpmap:8 PCMA/8000');
+              break;
+          }
+        }
+        
+      } else if (mediaSection.type === 'video') {
+        // Reject video for audio-only session
+        answerLines.push('m=video 0 UDP/TLS/RTP/SAVPF 96');
+        answerLines.push('c=IN IP4 0.0.0.0');
+        answerLines.push('a=inactive');
+        answerLines.push(`a=mid:${mediaSection.mid}`);
+        
+      } else {
+        // Handle other media types by rejecting them
+        answerLines.push(`m=${mediaSection.type} 0 UDP/TLS/RTP/SAVPF 96`);
+        answerLines.push('c=IN IP4 0.0.0.0');
+        answerLines.push('a=inactive');
+        answerLines.push(`a=mid:${mediaSection.mid}`);
+      }
+    }
+    
+    // Join with CRLF line endings as per SDP specification
+    const answerSdp = answerLines.join('\r\n') + '\r\n';
+    
+    console.log('[webrtc] Generated dynamic SDP answer');
+    console.log('[webrtc] Media order preserved:', mediaLines.map(m => m.type).join(' -> '));
+    console.log('[webrtc] Bundle group:', bundleGroup.join(' '));
+    
     res.setHeader('Content-Type', 'text/plain');
-    res.send(mockAnswerSdp);
+    res.send(answerSdp);
 
   } catch (error) {
     console.error('[webrtc] Server error:', error);

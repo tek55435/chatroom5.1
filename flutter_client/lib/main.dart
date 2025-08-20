@@ -371,6 +371,80 @@ class _HomePageState extends State<HomePage> {
     ''']);
   }
 
+  // iOS Audio Keep-Alive System
+  Timer? _audioKeepAliveTimer;
+  bool _isIOSAudioKeepAliveActive = false;
+  
+  void _startIOSAudioKeepAlive() {
+    if (!_isIOS || _isIOSAudioKeepAliveActive) return;
+    
+    _isIOSAudioKeepAliveActive = true;
+    print("[audio] Starting iOS audio keep-alive system");
+    
+    // Start periodic silent audio to keep audio context alive
+    _audioKeepAliveTimer = Timer.periodic(Duration(seconds: 3), (timer) {
+      _playSilentAudio();
+    });
+    
+    // Set up touch event listeners to reactivate audio context
+    js.context.callMethod('eval', ['''
+      window.iosAudioReactivate = function() {
+        console.log("[audio] Touch event - reactivating iOS audio context");
+        if (window.audioCtx && window.audioCtx.state === 'suspended') {
+          window.audioCtx.resume().then(() => {
+            console.log("[audio] iOS audio context resumed by touch");
+          }).catch((err) => {
+            console.error("[audio] Failed to resume iOS audio context:", err);
+          });
+        }
+      };
+      
+      // Add touch listeners to common UI elements
+      document.addEventListener('touchstart', window.iosAudioReactivate, {passive: true});
+      document.addEventListener('click', window.iosAudioReactivate, {passive: true});
+    ''']);
+  }
+  
+  void _playSilentAudio() {
+    if (!_isIOS) return;
+    
+    js.context.callMethod('eval', ['''
+      if (window.audioCtx && window.audioCtx.state === 'running') {
+        // Create a very brief silent audio to keep context alive
+        const oscillator = window.audioCtx.createOscillator();
+        const gainNode = window.audioCtx.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(window.audioCtx.destination);
+        
+        gainNode.gain.setValueAtTime(0, window.audioCtx.currentTime);
+        oscillator.frequency.setValueAtTime(440, window.audioCtx.currentTime);
+        
+        oscillator.start(window.audioCtx.currentTime);
+        oscillator.stop(window.audioCtx.currentTime + 0.01);
+      }
+    ''']);
+  }
+  
+  void _ensureIOSAudioContextActive() {
+    if (!_isIOS) return;
+    
+    js.context.callMethod('eval', ['''
+      if (window.audioCtx) {
+        if (window.audioCtx.state === 'suspended') {
+          console.log("[audio] iOS context suspended, attempting resume before TTS");
+          window.audioCtx.resume().then(() => {
+            console.log("[audio] iOS audio context resumed for TTS");
+          }).catch((err) => {
+            console.error("[audio] Failed to resume iOS audio context for TTS:", err);
+          });
+        } else {
+          console.log("[audio] iOS audio context already active:", window.audioCtx.state);
+        }
+      }
+    ''']);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -378,6 +452,9 @@ class _HomePageState extends State<HomePage> {
     
     // Check if we're on iOS
     _checkIfIOS();
+    
+    // Start iOS audio keep-alive if needed
+    _startIOSAudioKeepAlive();
     
     // Install runtime helpers for proper server resolution
     installRuntimeHelpers();
@@ -1564,6 +1641,9 @@ class _HomePageState extends State<HomePage> {
     try {
       appendTranscript('[info] Using direct TTS API: $text');
       
+      // Ensure iOS audio context is active before TTS
+      _ensureIOSAudioContextActive();
+      
       // Resolve the server base URL at runtime
       String resolvedBase = resolveServerBase();
       appendTranscript('[diag] Using API base: $resolvedBase');
@@ -1586,14 +1666,27 @@ class _HomePageState extends State<HomePage> {
             try {
               // Ensure audio context exists and is resumed (for iOS)
               if (window.audioContext) {
+                console.log('[audio] Current audio context state:', window.audioContext.state);
                 if (window.audioContext.state === 'suspended') {
                   await window.audioContext.resume();
                   console.log('[audio] Resumed audio context for TTS playback');
+                }
+              } else {
+                // Create audio context if it doesn't exist
+                try {
+                  window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                  console.log('[audio] Created new audio context for TTS');
+                } catch (e) {
+                  console.warn('[audio] Could not create audio context:', e);
                 }
               }
               
               const audio = new Audio('data:audio/mpeg;base64,$base64Audio');
               audio.volume = 1.0;
+              
+              // iOS-specific audio element setup
+              audio.setAttribute('preload', 'auto');
+              audio.setAttribute('playsinline', 'true');
               
               // For iOS and modern browsers, handle the play promise properly
               const playPromise = audio.play();
@@ -1611,11 +1704,20 @@ class _HomePageState extends State<HomePage> {
                     if (window.dartAppendTranscript) {
                       window.dartAppendTranscript("[error] TTS playback failed: " + error.message);
                     }
-                    // Try to show a user prompt for iOS
+                    // Specific handling for iOS permission errors
                     if (error.name === 'NotAllowedError') {
-                      console.log('[audio] iOS requires user interaction for audio playback');
+                      console.log('[audio] iOS audio permission required - check if Enable Audio was used');
                       if (window.dartAppendTranscript) {
                         window.dartAppendTranscript("[info] iOS detected - use 'Enable Audio' button above");
+                      }
+                      
+                      // Try to re-enable audio context
+                      if (window.audioContext && window.audioContext.state === 'suspended') {
+                        window.audioContext.resume().then(() => {
+                          console.log('[audio] Attempted to resume suspended audio context');
+                        }).catch((resumeError) => {
+                          console.error('[audio] Failed to resume audio context:', resumeError);
+                        });
                       }
                     }
                   });
@@ -2100,6 +2202,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    // Clean up iOS audio keep-alive timer
+    _audioKeepAliveTimer?.cancel();
+    
     // Remove listeners
     final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
     settingsProvider.removeListener(_updateAudioSettings);
