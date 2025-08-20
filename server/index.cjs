@@ -408,13 +408,125 @@ app.post('/api/stt', sttUpload, async (req, res) => {
     }
 
     console.log('STT request received, audio size:', file.size, 'mimetype:', file.mimetype, 'originalname:', file.originalname);
-    // Placeholder transcription; wire to real STT provider as needed
-    res.json({ text: 'This is a placeholder transcription.' });
+    
+    // Call OpenAI Whisper API for speech to text
+    try {
+      const language = (req.body && req.body.language) || 'en';
+      const temperature = (req.body && req.body.temperature) || 0;
+      const prompt = (req.body && req.body.prompt) || undefined;
+      
+      console.log('Processing STT with OpenAI => language:', language, 'temperature:', temperature, 'prompt:', prompt ? '[provided]' : 'none');
+      
+      const transcriptionResult = await makeSTTRequest(file.buffer, file.mimetype, file.originalname, { 
+        language, 
+        temperature, 
+        prompt 
+      });
+      
+      console.log('STT success, transcription:', transcriptionResult.text);
+      res.json(transcriptionResult);
+    } catch (sttError) {
+      console.error('Error with STT API:', sttError);
+      res.status(500).json({ error: sttError.message });
+    }
   } catch (error) {
     console.error('Error handling STT request:', error);
     res.status(500).json({ error: 'Failed to process STT request' });
   }
 });
+
+// Function to make STT request to OpenAI Whisper API
+async function makeSTTRequest(audioBuffer, mimetype = 'audio/webm', filename = 'recording.webm', { language = 'en', temperature = 0, prompt } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!OPENAI_API_KEY) {
+      reject(new Error('OpenAI API key not set. Please set the OPENAI_API_KEY environment variable.'));
+      return;
+    }
+    
+    // Boundary for multipart form data
+    const boundary = `boundary_${Date.now().toString(16)}`;
+    
+    // Prepare form data parts
+    const formParts = [
+      `--${boundary}\r\n`,
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`,
+      `Content-Type: ${mimetype}\r\n\r\n`
+    ];
+    
+    // Add file data and closing boundary
+    const parts = [];
+    parts.push(Buffer.from(formParts.join('')));
+    parts.push(audioBuffer);
+    // model
+    parts.push(Buffer.from(`\r\n--${boundary}\r\n`));
+    parts.push(Buffer.from('Content-Disposition: form-data; name="model"\r\n\r\n'));
+    parts.push(Buffer.from('whisper-1\r\n'));
+    // language
+    if (language) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="language"\r\n\r\n'));
+      parts.push(Buffer.from(String(language) + '\r\n'));
+    }
+    // temperature
+    parts.push(Buffer.from(`--${boundary}\r\n`));
+    parts.push(Buffer.from('Content-Disposition: form-data; name="temperature"\r\n\r\n'));
+    parts.push(Buffer.from(String(temperature) + '\r\n'));
+    // prompt (optional)
+    if (prompt) {
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="prompt"\r\n\r\n'));
+      parts.push(Buffer.from(String(prompt) + '\r\n'));
+    }
+    // closing
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const requestBody = Buffer.concat(parts);
+    
+    const options = {
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/audio/transcriptions',
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Length': requestBody.length
+      }
+    };
+    
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        let errorData = '';
+        res.on('data', (chunk) => {
+          errorData += chunk;
+        });
+        res.on('end', () => {
+          reject(new Error(`OpenAI API returned ${res.statusCode}: ${errorData}`));
+        });
+        return;
+      }
+      
+      let responseData = '';
+      res.on('data', (chunk) => {
+        responseData += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const jsonResponse = JSON.parse(responseData);
+          resolve(jsonResponse);
+        } catch (error) {
+          reject(new Error(`Failed to parse API response: ${error.message}`));
+        }
+      });
+    });
+    
+    req.on('error', (error) => {
+      reject(error);
+    });
+    
+    req.write(requestBody);
+    req.end();
+  });
+}
 
 // Generate silence audio buffer (WAV format)
 function generateSilence(durationSec, sampleRate = 44100) {
