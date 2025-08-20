@@ -210,6 +210,9 @@ class _HomePageState extends State<HomePage> {
   bool useSimpleRecorder = false;
   dynamic fallbackBlob; // Blob from fallback recorder
   
+  // iOS Audio handling
+  bool _audioEnabled = false;
+  bool _isIOS = false;
 
   // Auto-connect handled by ChatSessionProvider
 
@@ -372,6 +375,9 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     // Auto-connect handled by ChatSessionProvider
+    
+    // Check if we're on iOS
+    _checkIfIOS();
     
     // Install runtime helpers for proper server resolution
     installRuntimeHelpers();
@@ -1571,12 +1577,57 @@ class _HomePageState extends State<HomePage> {
       
       if (response.statusCode == 200) {
         appendTranscript('[info] TTS API response received, playing audio...');
+        final audioBytes = response.bodyBytes;
+        final base64Audio = base64Encode(audioBytes);
         
-        // Play the audio using Web Audio API
-        final audioBlob = html.Blob([response.bodyBytes], 'audio/mpeg');
-        final audioUrl = html.Url.createObjectUrlFromBlob(audioBlob);
-        final audioElement = html.AudioElement()..src = audioUrl;
-        audioElement.play();
+        // Enhanced iOS audio playback using JavaScript
+        js.context.callMethod('eval', ['''
+          (async function() {
+            try {
+              // Ensure audio context exists and is resumed (for iOS)
+              if (window.audioContext) {
+                if (window.audioContext.state === 'suspended') {
+                  await window.audioContext.resume();
+                  console.log('[audio] Resumed audio context for TTS playback');
+                }
+              }
+              
+              const audio = new Audio('data:audio/mpeg;base64,$base64Audio');
+              audio.volume = 1.0;
+              
+              // For iOS and modern browsers, handle the play promise properly
+              const playPromise = audio.play();
+              
+              if (playPromise !== undefined) {
+                playPromise
+                  .then(() => {
+                    console.log('[audio] TTS playback started successfully');
+                    if (window.dartAppendTranscript) {
+                      window.dartAppendTranscript("[audio] Auto-playing incoming: TTS");
+                    }
+                  })
+                  .catch((error) => {
+                    console.error('[audio] TTS playback failed:', error);
+                    if (window.dartAppendTranscript) {
+                      window.dartAppendTranscript("[error] TTS playback failed: " + error.message);
+                    }
+                    // Try to show a user prompt for iOS
+                    if (error.name === 'NotAllowedError') {
+                      console.log('[audio] iOS requires user interaction for audio playback');
+                      if (window.dartAppendTranscript) {
+                        window.dartAppendTranscript("[info] iOS detected - use 'Enable Audio' button above");
+                      }
+                    }
+                  });
+              }
+            } catch (e) {
+              console.error('[audio] Error playing TTS:', e);
+              if (window.dartAppendTranscript) {
+                window.dartAppendTranscript("[error] Exception playing TTS: " + e.message);
+              }
+            }
+          })();
+        ''']);
         
         appendTranscript('[success] Direct TTS audio playing');
       } else {
@@ -1951,6 +2002,102 @@ class _HomePageState extends State<HomePage> {
     ''']);
   }
 
+  // iOS Audio handling methods
+  void _checkIfIOS() {
+    try {
+      final userAgent = html.window.navigator.userAgent.toLowerCase();
+      _isIOS = userAgent.contains('iphone') || 
+                userAgent.contains('ipad') || 
+                userAgent.contains('ipod') ||
+                (userAgent.contains('mac') && 'ontouchend' == html.document.documentElement?.getAttribute('ontouchend'));
+      
+      if (_isIOS) {
+        print('[audio] iOS detected - audio requires user interaction');
+        appendTranscript('[info] iOS device detected - audio will require user activation');
+        appendDiagnostic('[iOS] Device detected: ${html.window.navigator.userAgent}');
+        appendDiagnostic('[iOS] Audio enabled: $_audioEnabled');
+      } else {
+        appendDiagnostic('[Platform] Non-iOS device detected');
+      }
+      
+      // Check audio context state
+      try {
+        final audioState = js.context.callMethod('eval', ['''
+          (function() {
+            if (window.audioContext) {
+              return window.audioContext.state;
+            }
+            return 'no-context';
+          })();
+        ''']);
+        appendDiagnostic('[audio] Initial context state: $audioState');
+      } catch (e) {
+        appendDiagnostic('[audio] Could not check context state: $e');
+      }
+    } catch (e) {
+      print('[audio] Error detecting iOS: $e');
+      appendDiagnostic('[error] iOS detection failed: $e');
+    }
+  }
+
+  Future<void> _enableAudioForIOS() async {
+    try {
+      // Create and play a silent audio to unlock iOS audio
+      js.context.callMethod('eval', ['''
+        (async function() {
+          try {
+            // Create an audio context
+            window.audioContext = window.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Resume audio context if suspended
+            if (window.audioContext.state === 'suspended') {
+              await window.audioContext.resume();
+              console.log('[audio] iOS audio context resumed');
+            }
+            
+            // Play a silent sound to unlock audio
+            const buffer = window.audioContext.createBuffer(1, 1, 22050);
+            const source = window.audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(window.audioContext.destination);
+            source.start(0);
+            
+            console.log('[audio] iOS audio unlocked');
+            if (window.dartAppendTranscript) {
+              window.dartAppendTranscript("[audio] iOS audio system unlocked and ready");
+            }
+            return true;
+          } catch (e) {
+            console.error('[audio] Error unlocking iOS audio:', e);
+            if (window.dartAppendTranscript) {
+              window.dartAppendTranscript("[error] Failed to unlock iOS audio: " + e.message);
+            }
+            return false;
+          }
+        })();
+      ''']);
+      
+      setState(() {
+        _audioEnabled = true;
+      });
+      
+      appendDiagnostic('[iOS] Audio successfully enabled and unlocked');
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Audio enabled! You can now hear TTS messages.'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('[audio] Error enabling iOS audio: $e');
+      appendTranscript('[error] Failed to enable iOS audio: $e');
+    }
+  }
+
   @override
   void dispose() {
     // Remove listeners
@@ -2140,6 +2287,8 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Column(
         children: [
+          // iOS Audio enable button (only shown on iOS when audio not enabled)
+          _buildIOSAudioButton(),
           // Room info/status bar
           Consumer<ChatSessionProvider>(
             builder: (context, chat, _) {
@@ -2296,6 +2445,37 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  // Widget to show iOS audio enable button
+  Widget _buildIOSAudioButton() {
+    if (!_isIOS || _audioEnabled) return SizedBox.shrink();
+    
+    return Container(
+      padding: EdgeInsets.all(16),
+      color: Colors.orange.shade100,
+      child: Row(
+        children: [
+          Icon(Icons.volume_off, color: Colors.orange.shade800),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Tap to enable audio on iOS - required to hear TTS messages',
+              style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.w500),
+            ),
+          ),
+          ElevatedButton.icon(
+            onPressed: _enableAudioForIOS,
+            icon: Icon(Icons.volume_up),
+            label: Text('Enable Audio'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+            ),
+          ),
         ],
       ),
     );
