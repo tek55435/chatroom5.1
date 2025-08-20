@@ -9,6 +9,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const fs = require('fs');
+const https = require('https');
 const multer = require('multer');
 const { promisify } = require('util');
 
@@ -242,26 +243,73 @@ function broadcastToRoom(roomId, message, excludeWs = null) {
   });
 }
 
-// API route for Text-to-Speech
+// Helper: Call OpenAI TTS to synthesize speech (MP3)
+function makeTTSRequest(text, voice = 'alloy') {
+  return new Promise((resolve, reject) => {
+    if (!OPENAI_API_KEY) {
+      reject(new Error('OpenAI API key not set. Please set OPENAI_API_KEY in server/.env'));
+      return;
+    }
+
+    const payload = JSON.stringify({
+      model: 'tts-1',
+      input: text,
+      voice,
+      response_format: 'mp3'
+    });
+
+    const options = {
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/audio/speech',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+
+    const req = https.request(options, (resp) => {
+      const status = resp.statusCode || 500;
+      if (status !== 200) {
+        let errData = '';
+        resp.on('data', (chunk) => { errData += chunk; });
+        resp.on('end', () => reject(new Error(`OpenAI TTS ${status}: ${errData}`)));
+        return;
+      }
+      const chunks = [];
+      resp.on('data', (chunk) => chunks.push(chunk));
+      resp.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+
+    req.on('error', (e) => reject(e));
+    req.write(payload);
+    req.end();
+  });
+}
+
+// API route for Text-to-Speech (real TTS via OpenAI)
 app.post('/api/tts', async (req, res) => {
   try {
-    const { text } = req.body;
-    
-    if (!text) {
+    const { text, voice } = req.body || {};
+    if (!text || typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ error: 'Text is required' });
     }
-    
-    // In a real implementation, this would call an external TTS API
-    // For now, we're using a simple audio file as a placeholder
-    console.log(`TTS request: "${text}"`);
-    
-    // Send placeholder audio (silence)
-    const silenceBuffer = generateSilence(1, 44100);
-    res.set('Content-Type', 'audio/wav');
-    res.send(silenceBuffer);
+    const useVoice = typeof voice === 'string' && voice.trim() ? voice.trim() : 'alloy';
+    console.log(`TTS request => length=${text.length}, voice=${useVoice}`);
+
+    const audioBuffer = await makeTTSRequest(text, useVoice);
+    console.log(`TTS ok => ${audioBuffer.length} bytes`);
+    res.writeHead(200, {
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': audioBuffer.length,
+      'Cache-Control': 'no-cache'
+    });
+    res.end(audioBuffer);
   } catch (error) {
     console.error('Error handling TTS request:', error);
-    res.status(500).json({ error: 'Failed to process TTS request' });
+    res.status(502).json({ error: 'Failed to synthesize speech', detail: String(error && error.message ? error.message : error) });
   }
 });
 
@@ -344,18 +392,23 @@ app.get('/offer', (req, res) => {
   res.status(405).json({ error: 'method_not_allowed', detail: 'Use POST /offer with JSON body { sdp, model? }' });
 });
 
-// API route for Speech-to-Text
-app.post('/api/stt', upload.single('audio'), async (req, res) => {
+// API route for Speech-to-Text (robust upload handling)
+// Accepts multipart/form-data with field name 'file' or 'audio'
+const sttUpload = multer({ storage }).fields([{ name: 'file' }, { name: 'audio' }]);
+app.post('/api/stt', sttUpload, async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Audio file is required' });
+    const ct = req.headers['content-type'];
+    const cl = req.headers['content-length'];
+    console.log('STT request headers => content-type:', ct, 'content-length:', cl);
+    
+    const file = (req.files && (req.files.file?.[0] || req.files.audio?.[0])) || null;
+    if (!file) {
+      console.warn('STT request missing file payload (expected field "file" or "audio")');
+      return res.status(400).json({ error: 'Audio file is required (field "file" or "audio")' });
     }
-    
-    // In a real implementation, this would call an external STT API
-    // For now, we're just returning dummy text
-    console.log('STT request received, audio size:', req.file.size);
-    
-    // Send placeholder text
+
+    console.log('STT request received, audio size:', file.size, 'mimetype:', file.mimetype, 'originalname:', file.originalname);
+    // Placeholder transcription; wire to real STT provider as needed
     res.json({ text: 'This is a placeholder transcription.' });
   } catch (error) {
     console.error('Error handling STT request:', error);
