@@ -37,6 +37,119 @@ void main() {
 
 const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
 
+// Resolve server base at runtime: prefer window.SERVER_BASE, infer/upgrade on HTTPS pages
+String resolveServerBase() {
+  try {
+    final loc = html.window.location;
+    String base = '';
+    
+    // Check if we're running on the deployed cloud URL
+    if (loc.hostname == 'hear-all-v11-1.uc.r.appspot.com' || 
+        loc.hostname?.endsWith('.appspot.com') == true) {
+      base = 'https://hear-all-v11-1.uc.r.appspot.com';
+      print('[net] Using cloud URL: $base');
+      return base;
+    }
+    
+    // Check if we're on localhost
+    final isLocal = loc.hostname == 'localhost' || 
+                   loc.hostname == '127.0.0.1' || 
+                   loc.hostname == '0.0.0.0';
+    
+    if (isLocal) {
+      // CRITICAL: Always use http for localhost, never https
+      base = 'http://localhost:3000';
+      print('[net] Using local URL: $base');
+      return base;
+    }
+    
+    // Platform detection
+    final platform = html.window.navigator.platform ?? '';
+    final isMacOS = platform.toLowerCase().contains('mac');
+    
+    // For remote access from Mac, use cloud URL
+    if (isMacOS && !isLocal) {
+      base = 'https://hear-all-v11-1.uc.r.appspot.com';
+      print('[net] MacOS remote, using cloud URL: $base');
+      return base;
+    }
+    
+    // Default to origin but ensure localhost is http
+    base = loc.origin;
+    if (base.isEmpty) base = 'http://localhost:3000';
+    
+    // CRITICAL FIX: Ensure localhost is always http
+    if (base.contains('localhost') && base.startsWith('https://')) {
+      base = 'http://' + base.substring('https://'.length);
+      print('[net] Fixed localhost protocol: $base');
+    }
+    
+    return base;
+  } catch (e) {
+    print('[net] Error in resolveServerBase: $e');
+    return 'http://localhost:3000';
+  }
+}
+
+// Initialize global server base and JS helpers at startup
+void installRuntimeHelpers() {
+  try {
+    js.context['SERVER_BASE'] = resolveServerBase();
+    
+    // Set up JS helper to resolve server base with cross-platform support
+    js.context.callMethod('eval', [r'''
+      window.resolveRuntimeServerBase = function() {
+        try {
+          var loc = window.location || { protocol: 'https:', host: '', hostname: '', origin: '' };
+          
+          // Check if we're on deployed cloud URL
+          if (loc.hostname === 'hear-all-v11-1.uc.r.appspot.com' || 
+              (loc.hostname && loc.hostname.endsWith('.appspot.com'))) {
+            console.log('[JS] Using cloud URL');
+            return 'https://hear-all-v11-1.uc.r.appspot.com';
+          }
+          
+          // Check if we're on localhost
+          var isLocal = loc.hostname === 'localhost' || 
+                       loc.hostname === '127.0.0.1' || 
+                       loc.hostname === '0.0.0.0';
+          
+          if (isLocal) {
+            // CRITICAL: Always use http for localhost, never https
+            console.log('[JS] Using local URL');
+            return 'http://localhost:3000';
+          }
+          
+          // Platform detection
+          var isMacOS = navigator.platform && navigator.platform.toLowerCase().indexOf('mac') >= 0;
+          
+          // For remote access from Mac, use cloud URL
+          if (isMacOS && !isLocal) {
+            console.log('[JS] MacOS remote, using cloud URL');
+            return 'https://hear-all-v11-1.uc.r.appspot.com';
+          }
+          
+          // Default handling
+          var base = loc.origin || 'http://localhost:3000';
+          
+          // CRITICAL FIX: Ensure localhost is always http
+          if (base.indexOf('localhost') !== -1 && base.indexOf('https://localhost') === 0) {
+            console.log('[JS] Windows fix: Converting https://localhost to http://localhost');
+            base = 'http://' + base.substring('https://'.length);
+          }
+          
+          return base;
+        } catch(e) { 
+          console.error('[JS] Error in resolveRuntimeServerBase:', e); 
+          return 'http://localhost:3000'; 
+        }
+      };
+      window.SERVER_BASE = window.resolveRuntimeServerBase();
+      console.log('[JS] Resolved SERVER_BASE at runtime ->', window.SERVER_BASE);
+    ''']);
+  } catch (_) {}
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   
@@ -259,6 +372,9 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     // Auto-connect handled by ChatSessionProvider
+    
+    // Install runtime helpers for proper server resolution
+    installRuntimeHelpers();
     
     // Set up JavaScript functions to call back into Flutter
     js.context['dartAppendTranscript'] = (String text) {
@@ -694,15 +810,46 @@ class _HomePageState extends State<HomePage> {
           // Wait for ICE gathering
           appendToTranscript("Creating offer...");
           
-          // Send offer to server - use the SERVER_BASE from Dart
-          // Prefer window.SERVER_BASE injected from Dart, fallback to localhost:3000
-          const serverUrl = (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') 
-            ? window.SERVER_BASE 
-            : 'http://localhost:3000';
+          // Send offer to server - use proper URL resolution for cross-platform compatibility
+          let serverUrl = 'http://localhost:3000';
+          try {
+            if (window.resolveRuntimeServerBase && typeof window.resolveRuntimeServerBase === 'function') {
+              serverUrl = window.resolveRuntimeServerBase();
+              console.log("[webrtc] Resolved runtime server base:", serverUrl);
+            } else if (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') {
+              serverUrl = window.SERVER_BASE;
+            }
+            
+            // Cross-platform URL fixes
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const isMacOS = navigator.platform && navigator.platform.toLowerCase().indexOf('mac') >= 0;
+            
+            // Special handling for macOS remote access
+            if (isMacOS && !isLocal && serverUrl.includes('localhost')) {
+              console.log("[webrtc] MacOS detected with remote access, using cloud URL");
+              serverUrl = 'https://hear-all-v11-1.uc.r.appspot.com';
+            }
+            
+            // CRITICAL FIX for Windows - ensure localhost is always http://
+            if (serverUrl.startsWith('https://localhost')) {
+              console.log("[webrtc] Windows fix: Converting https://localhost to http://localhost");
+              serverUrl = 'http://' + serverUrl.substring('https://'.length);
+            }
+            
+            // Ensure we have a clean URL without double slashes
+            if (serverUrl.endsWith('/')) {
+              serverUrl = serverUrl.slice(0, -1);
+            }
+            
+          } catch(e) {
+            console.error("[webrtc] Error resolving server URL:", e);
+            serverUrl = 'http://localhost:3000';
+          }
+          
           const fullUrl = `${serverUrl}/offer`;
           appendToTranscript(`Sending offer to: ${fullUrl}`);
-          console.log("Server base from window:", window.SERVER_BASE);
-          console.log("Using server URL:", serverUrl);
+          console.log("[webrtc] Server base from window:", window.SERVER_BASE);
+          console.log("[webrtc] Using server URL:", serverUrl);
           
           try {
             // Log the SDP data being sent
@@ -1411,9 +1558,13 @@ class _HomePageState extends State<HomePage> {
     try {
       appendTranscript('[info] Using direct TTS API: $text');
       
+      // Resolve the server base URL at runtime
+      String resolvedBase = resolveServerBase();
+      appendTranscript('[diag] Using API base: $resolvedBase');
+      
       // Make HTTP request to our TTS endpoint
       final response = await http.post(
-        Uri.parse('$SERVER_BASE/api/tts'),
+        Uri.parse('$resolvedBase/api/tts'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'text': text}),
       );
@@ -1672,9 +1823,13 @@ class _HomePageState extends State<HomePage> {
       }
       js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
+      // Resolve the server base URL at runtime
+      String resolvedBase = resolveServerBase();
+      appendTranscript('[diag] Using API base for STT: $resolvedBase');
+      
       // Create XMLHttpRequest to handle the upload
       final xhr = html.HttpRequest();
-      xhr.open('POST', '$SERVER_BASE/api/stt');
+      xhr.open('POST', '$resolvedBase/api/stt');
       
       // Set up completion handler
       xhr.onLoad.listen((event) {
