@@ -90,6 +90,7 @@ class _HomePageState extends State<HomePage> {
 
   final roomController = TextEditingController(text: 'main');
   final inputController = TextEditingController();
+  final inputFocusNode = FocusNode();
   
   // Log entries for the diagnostic panel
   final List<String> diagnosticLogs = [];
@@ -1573,6 +1574,12 @@ class _HomePageState extends State<HomePage> {
       appendTranscript('[error] Failed to send message to room: $e');
     } finally {
       inputController.clear();
+      // Request focus back to input field for next message
+      Future.microtask(() {
+        if (mounted && inputFocusNode.canRequestFocus) {
+          inputFocusNode.requestFocus();
+        }
+      });
     }
   }
   
@@ -2311,7 +2318,10 @@ class _HomePageState extends State<HomePage> {
   void _openSettingsDialog() {
     showDialog(
       context: context,
-      builder: (_) => const SettingsDialog(),
+      builder: (_) => SettingsDialog(
+        onToggleDiagnosticPanel: _toggleDiagnosticsTray,
+        onCopyDiagnosticLogs: copyDiagnosticLogs,
+      ),
     );
   }
 
@@ -2763,6 +2773,7 @@ class _HomePageState extends State<HomePage> {
                               Expanded(
                                 child: TextField(
                                   controller: inputController,
+                                  focusNode: inputFocusNode,
                                   decoration: InputDecoration.collapsed(
                                     hintText: isSmallScreen 
                                         ? 'Type a message...' 

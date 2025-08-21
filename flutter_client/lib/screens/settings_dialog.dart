@@ -6,7 +6,14 @@ import '../models/user_persona.dart';
 import '../main.dart' show APP_VERSION;
 
 class SettingsDialog extends StatefulWidget {
-  const SettingsDialog({Key? key}) : super(key: key);
+  final VoidCallback? onToggleDiagnosticPanel;
+  final VoidCallback? onCopyDiagnosticLogs;
+  
+  const SettingsDialog({
+    Key? key, 
+    this.onToggleDiagnosticPanel,
+    this.onCopyDiagnosticLogs,
+  }) : super(key: key);
 
   @override
   State<SettingsDialog> createState() => _SettingsDialogState();
@@ -130,10 +137,34 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       ],
                     ),
                   ),
-                  // Close button
+                  // Action buttons
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
+                      // Left side - Diagnostic buttons
+                      Row(
+                        children: [
+                          if (widget.onCopyDiagnosticLogs != null)
+                            TextButton.icon(
+                              onPressed: widget.onCopyDiagnosticLogs,
+                              icon: const Icon(Icons.copy, size: 16),
+                              label: const Text('Copy Logs'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.blue[600],
+                              ),
+                            ),
+                          if (widget.onToggleDiagnosticPanel != null)
+                            TextButton.icon(
+                              onPressed: widget.onToggleDiagnosticPanel,
+                              icon: const Icon(Icons.bug_report, size: 16),
+                              label: const Text('Diagnostics'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.orange[600],
+                              ),
+                            ),
+                        ],
+                      ),
+                      // Right side - Close button
                       TextButton(
                         onPressed: () => Navigator.pop(context),
                         child: const Text('Close'),
