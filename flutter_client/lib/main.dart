@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'providers/persona_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/chat_session_provider.dart';
+import 'models/chat_message.dart';
 // Removed Ephemeral Chat imports per requirement
 // (unused here) import 'screens/persona_list_screen.dart';
 import 'screens/persona_creation_dialog.dart';
@@ -83,6 +84,9 @@ class _HomePageState extends State<HomePage> {
   final transcriptController = ScrollController();
   final List<String> transcriptLines = [];
   final List<String> chatLines = [];
+  
+  // Chat scroll controller for auto-scroll functionality
+  final chatScrollController = ScrollController();
 
   final roomController = TextEditingController(text: 'main');
   final inputController = TextEditingController();
@@ -201,6 +205,13 @@ class _HomePageState extends State<HomePage> {
   bool micOn = false;
   bool _personaPrompted = false;
   int _lastHandledChatIndex = -1;
+  
+  // Enhanced chat functionality
+  bool _isPlayingTTS = false;
+  String? _currentlyPlayingMessageId; // Track which message is being played
+  Timer? _messageAnimationTimer;
+  List<String> _recentlyArrivedMessages = []; // Track recent messages for animation
+  Set<String> _editingMessages = {}; // Track which messages are being edited
   
   // Function to test audio output
   void playTestSound() {
@@ -1189,7 +1200,9 @@ class _HomePageState extends State<HomePage> {
         await showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (_) => const PersonaCreationDialog(),
+          builder: (_) => PersonaCreationDialog(
+            onPersonaCreated: _showAudioPromptAfterPersonaCreation,
+          ),
         );
       }
 
@@ -1564,9 +1577,17 @@ class _HomePageState extends State<HomePage> {
   }
   
   // Function to use our new API endpoint for text-to-speech
-  Future<void> useDirectTTS(String text) async {
+  Future<void> useDirectTTS(String text, {String? messageId}) async {
     try {
       appendTranscript('[info] Using direct TTS API: $text');
+      
+      // Track TTS playback for this message
+      if (messageId != null) {
+        setState(() {
+          _isPlayingTTS = true;
+          _currentlyPlayingMessageId = messageId;
+        });
+      }
       
       // Make HTTP request to our TTS endpoint
       final response = await http.post(
@@ -1582,16 +1603,52 @@ class _HomePageState extends State<HomePage> {
         final audioBlob = html.Blob([response.bodyBytes], 'audio/mpeg');
         final audioUrl = html.Url.createObjectUrlFromBlob(audioBlob);
         final audioElement = html.AudioElement()..src = audioUrl;
+        
+        // Add event listeners to track playback completion
+        audioElement.onEnded.listen((_) {
+          if (messageId != null) {
+            setState(() {
+              _isPlayingTTS = false;
+              _currentlyPlayingMessageId = null;
+            });
+          }
+        });
+        
+        audioElement.onError.listen((_) {
+          if (messageId != null) {
+            setState(() {
+              _isPlayingTTS = false;
+              _currentlyPlayingMessageId = null;
+            });
+          }
+        });
+        
         audioElement.play();
         
         appendTranscript('[success] Direct TTS audio playing');
       } else {
         appendTranscript('[error] Failed to get TTS: ${response.statusCode}');
         print('TTS API error: ${response.body}');
+        
+        // Reset playback state on error
+        if (messageId != null) {
+          setState(() {
+            _isPlayingTTS = false;
+            _currentlyPlayingMessageId = null;
+          });
+        }
       }
     } catch (e) {
       appendTranscript('[error] Exception using TTS API: $e');
       print('Error with TTS API: $e');
+      
+      // Reset playback state on exception
+      if (messageId != null) {
+        setState(() {
+          _isPlayingTTS = false;
+          _currentlyPlayingMessageId = null;
+        });
+      }
     }
   }
   
@@ -1904,11 +1961,27 @@ class _HomePageState extends State<HomePage> {
       if (chat.messages.isEmpty) return;
       final settings = Provider.of<SettingsProvider>(context, listen: false);
 
+      // Check if there are new messages for auto-scroll and animation
+      bool hasNewMessages = chat.messages.length > (_lastHandledChatIndex + 1);
+      
       // Process only new messages since last check
       int start = _lastHandledChatIndex + 1;
       if (start < 0) start = 0;
       for (int i = start; i < chat.messages.length; i++) {
         final m = chat.messages[i];
+        
+        // Add message animation for new messages
+        if (hasNewMessages) {
+          _recentlyArrivedMessages.add(m.id);
+          
+          // Remove animation after 3 seconds
+          Timer(const Duration(seconds: 3), () {
+            setState(() {
+              _recentlyArrivedMessages.remove(m.id);
+            });
+          });
+        }
+        
         if (m.type != 'chat') {
           continue;
         }
@@ -1927,7 +2000,7 @@ class _HomePageState extends State<HomePage> {
             if (joined) {
               js.context.callMethod('webrtcSendTTS', [m.message]);
             } else {
-              await useDirectTTS(m.message);
+              await useDirectTTS(m.message, messageId: m.id);
             }
             appendTranscript('[audio] Auto-playing incoming: ${m.sender ?? 'Guest'}');
           } catch (e) {
@@ -1935,6 +2008,20 @@ class _HomePageState extends State<HomePage> {
           }
         }
       }
+      
+      // Auto-scroll to bottom when new messages arrive
+      if (hasNewMessages && chatScrollController.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (chatScrollController.hasClients) {
+            chatScrollController.animateTo(
+              chatScrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
+      
       _lastHandledChatIndex = chat.messages.length - 1;
     } catch (_) {
       // ignore handler errors
@@ -1975,8 +2062,12 @@ class _HomePageState extends State<HomePage> {
       chat.removeListener(_onChatUpdated);
     } catch (_) {}
     
+    // Cancel any ongoing timers
+    _messageAnimationTimer?.cancel();
+    
     // Dispose controllers
     transcriptController.dispose();
+    chatScrollController.dispose();
     inputController.dispose();
     roomController.dispose();
     super.dispose();
@@ -1991,6 +2082,172 @@ class _HomePageState extends State<HomePage> {
         chat.setUserName(name);
       }
     } catch (_) {}
+  }
+
+  // --- Enhanced Chat Features ---
+  
+  void _showAudioPromptAfterPersonaCreation() {
+    // Show a dialog asking if they want to enable audio
+    Future.delayed(const Duration(milliseconds: 500), () {
+      showDialog(
+        context: context,
+        barrierDismissible: true,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.volume_up, color: Colors.blue),
+              const SizedBox(width: 8),
+              const Text('Enable Audio?'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Would you like to enable audio features for voice conversations?',
+                style: TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '🎤 Audio features include:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('• Voice-to-text (speak your messages)'),
+                    const Text('• Text-to-speech (hear others\' messages)'),
+                    const Text('• Real-time voice conversations'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Maybe Later'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                // Trigger the audio session initialization (same as red button)
+                await _initializeAudioSession();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Enable Audio'),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+  
+  void _startEditingMessage(String messageId) {
+    setState(() {
+      _editingMessages.add(messageId);
+    });
+  }
+  
+  void _cancelEditingMessage(String messageId) {
+    setState(() {
+      _editingMessages.remove(messageId);
+    });
+  }
+  
+  void _saveEditedMessage(String messageId, String newText) {
+    setState(() {
+      _editingMessages.remove(messageId);
+    });
+    // Note: In a real implementation, you would send the edit to the server
+    // For now, this just cancels the edit mode since we don't have edit API
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Message editing is not yet implemented on the server')),
+    );
+  }
+  
+  void _playMessageTTS(ChatMessage message) {
+    final messageId = message.id;
+    
+    // Stop current playback if playing the same message
+    if (_currentlyPlayingMessageId == messageId) {
+      setState(() {
+        _isPlayingTTS = false;
+        _currentlyPlayingMessageId = null;
+      });
+      return;
+    }
+    
+    // Play the message using TTS
+    useDirectTTS(message.message, messageId: messageId);
+  }
+  
+  Widget _buildEditMessageWidget(ChatMessage message, ChatSessionProvider chat) {
+    final editController = TextEditingController(text: message.message);
+    
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.yellow.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange, width: 2),
+        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 3)],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Editing message from ${message.sender ?? 'Guest'}:',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Colors.orange[700],
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: editController,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              hintText: 'Edit your message...',
+            ),
+            maxLines: null,
+            autofocus: true,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: () => _cancelEditingMessage(message.id),
+                child: const Text('Cancel'),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () => _saveEditedMessage(message.id, editController.text),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   // --- Drawer actions ---
@@ -2130,15 +2387,116 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 600;
+    
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My App'),
+        title: Text(
+          isSmallScreen ? 'Chat' : 'Realtime Chat',
+          style: TextStyle(
+            fontSize: isSmallScreen ? 18 : 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        backgroundColor: Colors.blue.shade600,
+        foregroundColor: Colors.white,
+        elevation: 2,
         leading: Builder(
           builder: (context) => IconButton(
             icon: const Icon(Icons.menu),
             onPressed: () => Scaffold.of(context).openDrawer(),
+            iconSize: isSmallScreen ? 22 : 24,
           ),
         ),
+        actions: [
+          // Share button - always visible
+          IconButton(
+            onPressed: _openInviteDialog,
+            icon: const Icon(Icons.share),
+            tooltip: 'Invite Others',
+            iconSize: isSmallScreen ? 22 : 24,
+          ),
+          // Conditional actions based on screen size
+          if (!isSmallScreen) ...[
+            IconButton(
+              onPressed: _openPersonaDialog,
+              icon: const Icon(Icons.person),
+              tooltip: 'Create Persona',
+              iconSize: 24,
+            ),
+            IconButton(
+              onPressed: _openSettingsDialog,
+              icon: const Icon(Icons.settings),
+              tooltip: 'Settings',
+              iconSize: 24,
+            ),
+          ],
+          // Mobile overflow menu for smaller screens
+          if (isSmallScreen)
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                switch (value) {
+                  case 'persona':
+                    _openPersonaDialog();
+                    break;
+                  case 'settings':
+                    _openSettingsDialog();
+                    break;
+                  case 'help':
+                    _openHelpDialog();
+                    break;
+                  case 'diagnostics':
+                    _toggleDiagnosticsTray();
+                    break;
+                }
+              },
+              icon: const Icon(Icons.more_vert),
+              iconSize: 22,
+              itemBuilder: (BuildContext context) => [
+                const PopupMenuItem<String>(
+                  value: 'persona',
+                  child: Row(
+                    children: [
+                      Icon(Icons.person, size: 20),
+                      SizedBox(width: 12),
+                      Text('Create Persona'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem<String>(
+                  value: 'settings',
+                  child: Row(
+                    children: [
+                      Icon(Icons.settings, size: 20),
+                      SizedBox(width: 12),
+                      Text('Settings'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem<String>(
+                  value: 'help',
+                  child: Row(
+                    children: [
+                      Icon(Icons.help, size: 20),
+                      SizedBox(width: 12),
+                      Text('Help'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem<String>(
+                  value: 'diagnostics',
+                  child: Row(
+                    children: [
+                      Icon(Icons.bug_report, size: 20),
+                      SizedBox(width: 12),
+                      Text('Diagnostics'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
       ),
       drawer: AppMenuDrawer(
         onInvite: _openInviteDialog,
@@ -2170,24 +2528,51 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ),
-          // PROMINENT RED TEST BUTTON - Always visible for debugging
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.all(16),
-            child: ElevatedButton(
-              onPressed: () async {
-                print('TEST AUDIO SESSION BUTTON CLICKED');
-                appendDiagnostic('TEST AUDIO SESSION BUTTON CLICKED');
-                await _initializeAudioSession();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.all(20),
-                textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          // Audio Control Buttons
+          Row(
+            children: [
+              // Enable Audio Button - User-friendly version
+              Expanded(
+                flex: 2,
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      await _initializeAudioSession();
+                    },
+                    icon: const Icon(Icons.mic),
+                    label: const Text('Enable Audio'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.all(16),
+                      textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ),
               ),
-              child: const Text('🔊 TEST AUDIO SESSION BUTTON 🔊'),
-            ),
+              // Debug Test Button - For debugging
+              Expanded(
+                flex: 1,
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      print('TEST AUDIO SESSION BUTTON CLICKED');
+                      appendDiagnostic('TEST AUDIO SESSION BUTTON CLICKED');
+                      await _initializeAudioSession();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.all(16),
+                      textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    child: const Text('🔊 DEBUG'),
+                  ),
+                ),
+              ),
+            ],
           ),
           Expanded(
             child: Row(
@@ -2208,20 +2593,150 @@ class _HomePageState extends State<HomePage> {
                         Expanded(
                           child: Consumer<ChatSessionProvider>(
                             builder: (context, chat, _) => ListView.builder(
+                              controller: chatScrollController, // Add scroll controller for auto-scroll
                               itemCount: chat.messages.length,
                               itemBuilder: (context, index) {
                                 final m = chat.messages[index];
                                 final isSystem = m.type == 'system';
-                                final text = isSystem ? '[system] ${m.message}' : '${m.sender ?? 'Guest'}: ${m.message}';
-                                return Container(
+                                final isCurrentUserMessage = m.clientId == chat.clientId;
+                                final isEditing = _editingMessages.contains(m.id);
+                                final isRecentMessage = _recentlyArrivedMessages.contains(m.id);
+                                final isPlayingTTS = _currentlyPlayingMessageId == m.id;
+                                
+                                if (isEditing) {
+                                  // Show edit mode for this message
+                                  return _buildEditMessageWidget(m, chat);
+                                }
+                                
+                                return AnimatedContainer(
+                                  duration: const Duration(milliseconds: 300),
                                   margin: const EdgeInsets.symmetric(vertical: 4),
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
-                                    color: Colors.white,
+                                    color: isRecentMessage ? Colors.blue.shade50 : Colors.white,
                                     borderRadius: BorderRadius.circular(8),
-                                    boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 3)],
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: isRecentMessage 
+                                          ? Colors.blue.withOpacity(0.3)
+                                          : Colors.grey.withOpacity(0.2), 
+                                        spreadRadius: isRecentMessage ? 2 : 1, 
+                                        blurRadius: isRecentMessage ? 5 : 3
+                                      )
+                                    ],
+                                    border: isPlayingTTS 
+                                      ? Border.all(color: Colors.green, width: 2)
+                                      : null,
                                   ),
-                                  child: Text(text, style: const TextStyle(fontSize: 16)),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: RichText(
+                                              text: TextSpan(
+                                                style: DefaultTextStyle.of(context).style,
+                                                children: [
+                                                  if (isSystem)
+                                                    TextSpan(
+                                                      text: '[system] ${m.message}',
+                                                      style: TextStyle(
+                                                        fontSize: 16,
+                                                        fontStyle: FontStyle.italic,
+                                                        color: Colors.grey[600],
+                                                      ),
+                                                    )
+                                                  else ...[
+                                                    TextSpan(
+                                                      text: '${m.sender ?? 'Guest'}: ',
+                                                      style: TextStyle(
+                                                        fontSize: 16,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: isCurrentUserMessage 
+                                                          ? Colors.blue[700] 
+                                                          : Colors.grey[700],
+                                                      ),
+                                                    ),
+                                                    TextSpan(
+                                                      text: m.message,
+                                                      style: const TextStyle(fontSize: 16),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                          // TTS playing indicator
+                                          if (isPlayingTTS) ...[
+                                            const SizedBox(width: 8),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: Colors.green,
+                                                borderRadius: BorderRadius.circular(12),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Icon(Icons.volume_up, size: 16, color: Colors.white),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    'Playing',
+                                                    style: TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                      // Action buttons row
+                                      if (!isSystem) ...[
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            // Edit button (only for current user's messages)
+                                            if (isCurrentUserMessage) ...[
+                                              IconButton(
+                                                icon: Icon(Icons.edit, size: 16),
+                                                onPressed: () => _startEditingMessage(m.id),
+                                                tooltip: 'Edit message',
+                                                constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                                                padding: EdgeInsets.all(4),
+                                              ),
+                                              const SizedBox(width: 8),
+                                            ],
+                                            // Play TTS button
+                                            IconButton(
+                                              icon: Icon(
+                                                isPlayingTTS ? Icons.stop : Icons.play_arrow,
+                                                size: 16,
+                                              ),
+                                              onPressed: () => _playMessageTTS(m),
+                                              tooltip: isPlayingTTS ? 'Stop playing' : 'Play message aloud',
+                                              constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                                              padding: EdgeInsets.all(4),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            // Timestamp
+                                            Text(
+                                              '${m.timestamp.hour.toString().padLeft(2, '0')}:${m.timestamp.minute.toString().padLeft(2, '0')}',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey[500],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ],
+                                  ),
                                 );
                               },
                             ),
@@ -2229,32 +2744,74 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const SizedBox(height: 10),
                         Container(
-                          padding: const EdgeInsets.all(8),
+                          padding: EdgeInsets.all(isSmallScreen ? 12 : 8),
+                          margin: EdgeInsets.all(isSmallScreen ? 8 : 0),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(isSmallScreen ? 16 : 12),
                             border: Border.all(color: Colors.blue.shade100),
+                            boxShadow: isSmallScreen ? [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ] : null,
                           ),
                           child: Row(
                             children: [
                               Expanded(
                                 child: TextField(
                                   controller: inputController,
-                                  decoration: const InputDecoration.collapsed(hintText: 'Type a message to send as TTS...'),
+                                  decoration: InputDecoration.collapsed(
+                                    hintText: isSmallScreen 
+                                        ? 'Type a message...' 
+                                        : 'Type a message to send as TTS...',
+                                    hintStyle: TextStyle(
+                                      fontSize: isSmallScreen ? 14 : 16,
+                                      color: Colors.grey.shade500,
+                                    ),
+                                  ),
+                                  style: TextStyle(
+                                    fontSize: isSmallScreen ? 14 : 16,
+                                  ),
                                   onSubmitted: (_) => sendTypedAsTTS(),
+                                  textInputAction: TextInputAction.send,
                                 ),
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.send, color: Colors.blue),
-                                onPressed: sendTypedAsTTS,
-                                tooltip: 'Share to room',
+                              if (!isSmallScreen) const SizedBox(width: 8),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(isSmallScreen ? 12 : 8),
+                                ),
+                                child: IconButton(
+                                  icon: Icon(
+                                    Icons.send,
+                                    color: Colors.blue,
+                                    size: isSmallScreen ? 20 : 24,
+                                  ),
+                                  onPressed: sendTypedAsTTS,
+                                  tooltip: 'Send message',
+                                  padding: EdgeInsets.all(isSmallScreen ? 8 : 12),
+                                ),
                               ),
-                              IconButton(
-                                icon: Icon(isRecording ? Icons.stop_circle : Icons.mic),
-                                onPressed: isRecording ? stopRecording : startRecording,
-                                tooltip: isRecording ? 'Stop Recording' : 'Start STT Recording',
-                                color: isRecording ? Colors.red : Colors.blue,
-                                iconSize: 28,
+                              SizedBox(width: isSmallScreen ? 8 : 4),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: isRecording ? Colors.red.shade50 : Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(isSmallScreen ? 12 : 8),
+                                ),
+                                child: IconButton(
+                                  icon: Icon(
+                                    isRecording ? Icons.stop_circle : Icons.mic,
+                                    color: isRecording ? Colors.red : Colors.blue,
+                                    size: isSmallScreen ? 24 : 28,
+                                  ),
+                                  onPressed: isRecording ? stopRecording : startRecording,
+                                  tooltip: isRecording ? 'Stop Recording' : 'Start Voice Recording',
+                                  padding: EdgeInsets.all(isSmallScreen ? 8 : 10),
+                                ),
                               ),
                             ],
                           ),
