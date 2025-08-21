@@ -21,6 +21,9 @@ import 'screens/persona_actions_dialog.dart';
 import 'widgets/app_menu_drawer.dart';
 import 'widgets/share_dialog.dart';
 
+// App version with timestamp for deployment tracking
+const String APP_VERSION = "v1.6.2025082116"; // Year-Month-Day-Hour format
+
 void main() {
   runApp(
     MultiProvider(
@@ -346,6 +349,17 @@ class _HomePageState extends State<HomePage> {
             iceServers: []
           });
           
+          // Add audio tracks to peer connection if userMediaStream is available
+          if (window.userMediaStream) {
+            console.log('[WebRTC] Adding audio tracks from user media stream');
+            window.userMediaStream.getAudioTracks().forEach(track => {
+              peerConnection.addTrack(track, window.userMediaStream);
+              console.log('[WebRTC] Added audio track:', track.label);
+            });
+          } else {
+            console.warn('[WebRTC] No userMediaStream available - offer may lack audio section');
+          }
+          
           // Set up ontrack handler
           peerConnection.ontrack = (event) => {
             console.log("Got remote track", event);
@@ -371,12 +385,17 @@ class _HomePageState extends State<HomePage> {
             const sessionConfig = {
               type: 'session.update',
               session: {
+                modalities: ['text', 'audio'],
+                instructions: 'You are a helpful assistant. You will respond in a conversational manner, speaking naturally as if having a voice conversation. Keep responses concise and natural. Wait for the user to explicitly send audio before responding.',
                 voice: 'alloy',
-                temperature: 0.8,
                 input_audio_format: 'pcm16',
                 output_audio_format: 'pcm16',
-                max_response_output_tokens: 'inf',  // Use string 'inf' as required by API
-                speed: 1.0
+                input_audio_transcription: {
+                  model: 'whisper-1'
+                },
+                turn_detection: null,  // Disable automatic turn detection - manual control only
+                temperature: 0.8,
+                max_response_output_tokens: 'inf'
               }
             };
             console.log("Sending session config:", sessionConfig);
@@ -438,6 +457,26 @@ class _HomePageState extends State<HomePage> {
                 // Just log these system events without showing full JSON
                 appendToTranscript("[system] Session " + (type === 'session.created' ? 'created' : 'updated'));
                 console.log("Session event details:", JSON.stringify(data));
+              } else if (type === 'input_audio_buffer.speech_started') {
+                // User started speaking - interrupt any ongoing AI response
+                console.log("User speech detected - canceling any ongoing response");
+                appendToTranscript("[user] Speech started");
+                
+                // Cancel ongoing response
+                if (dataChannel && dataChannel.readyState === 'open') {
+                  const cancelResponse = {
+                    type: 'response.cancel'
+                  };
+                  console.log("Sending response.cancel");
+                  dataChannel.send(JSON.stringify(cancelResponse));
+                }
+              } else if (type === 'response.output_item.added' || type === 'response.done') {
+                // Track response state
+                if (type === 'response.done') {
+                  appendToTranscript("[system] Response completed");
+                } else {
+                  appendToTranscript("[system] Response started");
+                }
               } else if (type === 'error') {
                 // Show errors prominently
                 const errorMsg = data.error?.message || data.message || JSON.stringify(data);
@@ -656,6 +695,20 @@ class _HomePageState extends State<HomePage> {
         }
       }
       
+      // Function to mute/unmute WebRTC audio tracks
+      function setWebRTCAudioEnabled(enabled) {
+        if (window.localAudioStream) {
+          window.localAudioStream.getAudioTracks().forEach(track => {
+            track.enabled = enabled;
+            console.log("WebRTC audio track", enabled ? "enabled" : "disabled");
+          });
+          appendToTranscript(enabled ? "[audio] WebRTC microphone enabled" : "[audio] WebRTC microphone disabled");
+        }
+      }
+      
+      // Make the mute control available globally
+      window.setWebRTCAudioEnabled = setWebRTCAudioEnabled;
+      
       // Join session
       async function joinRTCSession(attempt = 0) {
         try {
@@ -780,9 +833,14 @@ class _HomePageState extends State<HomePage> {
           
           // Add tracks to peer connection
           localStream.getAudioTracks().forEach(track => {
+            // Start with tracks muted to prevent always-on listening
+            track.enabled = false;
             peerConnection.addTrack(track, localStream);
-            appendToTranscript("Added local audio track");
+            appendToTranscript("Added local audio track (muted)");
           });
+          
+          // Store the stream globally for mute/unmute control
+          window.localAudioStream = localStream;
           
           return true;
         } catch (err) {
@@ -1147,11 +1205,13 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (_) {}
 
-      // Join WebRTC session once bridge is ready
+      // DO NOT auto-join WebRTC - wait for user interaction via audio button
+      // This prevents iOS Safari audio permission errors
       js.context.callMethod('eval', ['''
         try {
-          setTimeout(() => { if (window.webrtcJoin) window.webrtcJoin(0); }, 0);
-        } catch (err) { console.error('Failed to join WebRTC:', err); }
+          console.log('[WebRTC] Auto-join disabled - waiting for user audio interaction');
+          // setTimeout(() => { if (window.webrtcJoin) window.webrtcJoin(0); }, 0);
+        } catch (err) { console.error('Failed to setup WebRTC:', err); }
       ''']);
     });
   }
@@ -1203,6 +1263,103 @@ class _HomePageState extends State<HomePage> {
       showDiagnosticPanel = !showDiagnosticPanel;
     });
     appendDiagnostic("[System] Diagnostic panel ${showDiagnosticPanel ? 'opened' : 'closed'}");
+  }
+  
+  Future<void> _initializeAudioSession() async {
+    appendDiagnostic("[iOS Audio] Initializing comprehensive audio session...");
+    
+    try {
+      // Execute the comprehensive iOS audio session initialization
+      js.context.callMethod('eval', ['''
+        (async function() {
+          try {
+            console.log('[iOS Audio] Starting comprehensive audio session initialization...');
+            
+            // Step 1: Create AudioContext with optimal settings for iOS
+            if (!window.audioContext) {
+              window.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 24000,
+                latencyHint: 'interactive'
+              });
+            }
+            
+            // Step 2: Request microphone access to enable "call mode"
+            const stream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+              }
+            });
+            
+            // Step 3: Create MediaStreamDestinationNode to maintain audio session
+            const destination = window.audioContext.createMediaStreamDestination();
+            const source = window.audioContext.createMediaStreamSource(stream);
+            source.connect(destination);
+            
+            // Step 4: Resume AudioContext if suspended
+            if (window.audioContext.state === 'suspended') {
+              await window.audioContext.resume();
+            }
+            
+            // Step 5: Request wake lock to prevent audio interruption
+            if ('wakeLock' in navigator) {
+              window.wakeLock = await navigator.wakeLock.request('screen');
+              console.log('[iOS Audio] Wake lock acquired');
+            }
+            
+            // Step 6: Initialize audio session persistence mechanisms
+            window.audioSessionActive = true;
+            window.audioQueue = [];
+            window.isPlayingAudio = false;
+            
+            // Step 7: Play a silent audio buffer to "prime" the audio system
+            const buffer = window.audioContext.createBuffer(1, 1, window.audioContext.sampleRate);
+            const bufferSource = window.audioContext.createBufferSource();
+            bufferSource.buffer = buffer;
+            bufferSource.connect(window.audioContext.destination);
+            bufferSource.start();
+            
+            // Step 8: Store the stream for WebRTC use
+            window.userMediaStream = stream;
+            
+            console.log('[iOS Audio] Audio session initialization complete!');
+            console.log('[iOS Audio] AudioContext state:', window.audioContext.state);
+            console.log('[iOS Audio] Sample rate:', window.audioContext.sampleRate);
+            
+            // Step 9: Now initialize WebRTC with proper audio permissions
+            try {
+              if (!window.peerConnection) {
+                console.log('[WebRTC] Initializing WebRTC after audio session...');
+                await initWebRTC();
+                console.log('[WebRTC] WebRTC initialized successfully');
+                
+                // Auto-join the session
+                if (typeof joinRTCSession === 'function') {
+                  console.log('[WebRTC] Auto-joining RTC session...');
+                  joinRTCSession();
+                }
+              }
+            } catch (webrtcError) {
+              console.warn('[WebRTC] Failed to initialize WebRTC:', webrtcError);
+              dartAppendTranscript('[WebRTC] Warning: WebRTC failed, but audio session is active');
+            }
+            
+            // Report success to Flutter
+            dartAppendTranscript('[iOS Audio] ✅ Audio session initialized successfully!');
+            
+          } catch (error) {
+            console.error('[iOS Audio] Error during initialization:', error);
+            dartAppendTranscript('[iOS Audio] ❌ Error: ' + error.message);
+          }
+        })();
+      ''']);
+      
+      appendDiagnostic("[iOS Audio] Initialization command sent to JavaScript");
+      
+    } catch (e) {
+      appendDiagnostic("[iOS Audio] Error in initialization: $e");
+    }
   }
   
   void testAudioInitialization() {
@@ -1441,6 +1598,10 @@ class _HomePageState extends State<HomePage> {
   // Function to start recording audio for STT
   void startRecording() async {
     appendTranscript('[info] Starting audio recording for STT...');
+    
+    // Enable WebRTC audio track for OpenAI
+    js_util.callMethod(html.window, 'setWebRTCAudioEnabled', [true]);
+    
     try {
       // Environment diagnostics
       final isSecure = js_util.getProperty(html.window, 'isSecureContext') == true;
@@ -1596,6 +1757,9 @@ class _HomePageState extends State<HomePage> {
   
   // Function to stop recording
   void stopRecording() {
+    // Disable WebRTC audio track to stop sending to OpenAI
+    js_util.callMethod(html.window, 'setWebRTCAudioEnabled', [false]);
+    
     if (useSimpleRecorder && simpleRecorder != null) {
       appendTranscript('[info] Stopping fallback recorder...');
       try {
@@ -2005,6 +2169,25 @@ class _HomePageState extends State<HomePage> {
                 ),
               );
             },
+          ),
+          // PROMINENT RED TEST BUTTON - Always visible for debugging
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.all(16),
+            child: ElevatedButton(
+              onPressed: () async {
+                print('TEST AUDIO SESSION BUTTON CLICKED');
+                appendDiagnostic('TEST AUDIO SESSION BUTTON CLICKED');
+                await _initializeAudioSession();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.all(20),
+                textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              child: const Text('🔊 TEST AUDIO SESSION BUTTON 🔊'),
+            ),
           ),
           Expanded(
             child: Row(
