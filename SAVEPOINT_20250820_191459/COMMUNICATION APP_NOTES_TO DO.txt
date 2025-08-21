@@ -1,0 +1,7 @@
+COMMUNICATION APP
+
+Did the new Hamburger Menu get on the main Conversation Page? 
+
+When a user selects their mode, highlight their method. Meaning, if they select STT, then make the microphone button larger or more noticeable or more prompinent. Just a little bit though. Don't make it huge
+
+

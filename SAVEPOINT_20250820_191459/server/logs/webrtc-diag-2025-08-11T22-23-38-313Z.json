@@ -1,0 +1,25 @@
+{
+  "browserInfo": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "platform": "Win32",
+    "vendor": "Google Inc.",
+    "webRTCSupported": true,
+    "audioContextSupported": true
+  },
+  "connectionInfo": {},
+  "iceServers": [],
+  "testResults": {
+    "peerConnection": true,
+    "dataChannel": true,
+    "audioElement": true,
+    "stunConnectivity": true,
+    "iceCandidates": false
+  },
+  "errors": [],
+  "stunResults": {
+    "stun:stun.l.google.com:19302": true,
+    "stun:stun1.l.google.com:19302": true,
+    "stun:stun2.l.google.com:19302": true,
+    "stun:stun.ekiga.net": true
+  }
+}

@@ -1,0 +1,20 @@
+runtime: nodejs20
+
+# Using default service since this is the first deployment
+# service: chatroom5
+
+env_variables:
+  PORT: "8080"
+  NODE_ENV: "production"
+  MODEL: "gpt-4o-realtime-preview-2024-12-17"
+  OPENAI_API_KEY: "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"
+
+handlers:
+  - url: /.*
+    secure: always
+    script: auto
+
+
+
+
+

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Realtime TTS+STT</title>
+    <link rel="manifest" href="manifest.json">
+  </head>
+  <body>
+    <script>
+      // Allow Flutter to log to console early if needed
+      console.info("Starting Flutter Realtime TTS+STT app");
+    </script>
+    <!-- PCM helper for audio processing (namespaced version) -->
+    <script src="pcm_helper_namespaced.js" type="application/javascript"></script>
+    <!-- TTS WebRTC handler -->
+    <script src="tts_handler.js" type="application/javascript"></script>
+    <!-- Ephemeral Chat Integration -->
+    <script src="ephemeral_chat.js" type="application/javascript"></script>
+    <!-- Share Functionality -->
+    <script src="share_helper.js" type="application/javascript"></script>
+    <!-- Enhanced share functionality -->
+    <script src="share_fix.js" type="application/javascript"></script>
+    <!-- Direct share button fix -->
+    <script src="share_button_fix.js" type="application/javascript"></script>
+    <!-- Debug tools for chat -->\n    <script src="test_share_button.js" type="application/javascript"></script>\n    <script src="direct_global_share.js" type="application/javascript"></script>
+    <script src="chat-debug.js" type="application/javascript"></script>
+    <!-- Share debug tools -->
+    <script src="share_debug.js" type="application/javascript"></script>
+    
+    <!-- Direct standalone share implementation -->
+    <script src="direct_share.js" type="application/javascript"></script>
+    
+    <!-- Direct inline script for share functionality - GUARANTEED TO WORK -->
+    <script type="application/javascript">
+      // Simple inline function to ensure sharing works
+      window.shareChat = function(url) {
+        console.log('Simple inline shareChat called with:', url);
+        
+        try {
+          // Try Clipboard API first (most reliable)
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url);
+            alert('Chat URL copied to clipboard: ' + url);
+            return true;
+          }
+          
+          // Fallback method
+          var textArea = document.createElement('textarea');
+          textArea.value = url;
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          
+          try {
+            document.execCommand('copy');
+            alert('Chat URL copied to clipboard: ' + url);
+            return true;
+          } catch(e) {
+            alert('Please copy this URL manually: ' + url);
+            return false;
+          } finally {
+            document.body.removeChild(textArea);
+          }
+        } catch(e) {
+          alert('Please copy this URL manually: ' + url);
+          return false;
+        }
+      };
+      
+      console.log('Inline share function ready');
+    </script>
+    
+    <script src="main.dart.js" type="application/javascript"></script>
+  </body>
+</html>
+<script type="application/javascript"> 
+  // GUARANTEED GLOBAL SHARE FUNCTION
+  window.directChatShare = function(url) { 
+    console.log('directChatShare called with URL: ' + url); 
+    try { 
+      if (navigator.clipboard) { 
+        navigator.clipboard.writeText(url); 
+        alert('Chat URL copied to clipboard: ' + url); 
+      } else { 
+        var textarea = document.createElement('textarea'); 
+        textarea.value = url; 
+        document.body.appendChild(textarea); 
+        textarea.select(); 
+        document.execCommand('copy'); 
+        document.body.removeChild(textarea); 
+        alert('Chat URL copied to clipboard: ' + url); 
+      } 
+      return true; 
+    } catch(e) { 
+      alert('Please copy this URL manually: ' + url); 
+      return false; 
+    } 
+  }; 
+
+  // Also keep shareChat as a backup
+  window.shareChat = window.directChatShare;
+  
+  console.log('Global directChatShare function ready'); 
+</script> 

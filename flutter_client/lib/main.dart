@@ -35,120 +35,7 @@ void main() {
   );
 }
 
-const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'http://localhost:3000');
-
-// Resolve server base at runtime: prefer window.SERVER_BASE, infer/upgrade on HTTPS pages
-String resolveServerBase() {
-  try {
-    final loc = html.window.location;
-    String base = '';
-    
-    // Check if we're running on the deployed cloud URL
-    if (loc.hostname == 'hear-all-v11-1.uc.r.appspot.com' || 
-        loc.hostname?.endsWith('.appspot.com') == true) {
-      base = 'https://hear-all-v11-1.uc.r.appspot.com';
-      print('[net] Using cloud URL: $base');
-      return base;
-    }
-    
-    // Check if we're on localhost
-    final isLocal = loc.hostname == 'localhost' || 
-                   loc.hostname == '127.0.0.1' || 
-                   loc.hostname == '0.0.0.0';
-    
-    if (isLocal) {
-      // CRITICAL: Always use http for localhost, never https
-      base = 'http://localhost:3000';
-      print('[net] Using local URL: $base');
-      return base;
-    }
-    
-    // Platform detection
-    final platform = html.window.navigator.platform ?? '';
-    final isMacOS = platform.toLowerCase().contains('mac');
-    
-    // For remote access from Mac, use cloud URL
-    if (isMacOS && !isLocal) {
-      base = 'https://hear-all-v11-1.uc.r.appspot.com';
-      print('[net] MacOS remote, using cloud URL: $base');
-      return base;
-    }
-    
-    // Default to origin but ensure localhost is http
-    base = loc.origin;
-    if (base.isEmpty) base = 'http://localhost:3000';
-    
-    // CRITICAL FIX: Ensure localhost is always http
-    if (base.contains('localhost') && base.startsWith('https://')) {
-      base = 'http://' + base.substring('https://'.length);
-      print('[net] Fixed localhost protocol: $base');
-    }
-    
-    return base;
-  } catch (e) {
-    print('[net] Error in resolveServerBase: $e');
-    return 'http://localhost:3000';
-  }
-}
-
-// Initialize global server base and JS helpers at startup
-void installRuntimeHelpers() {
-  try {
-    js.context['SERVER_BASE'] = resolveServerBase();
-    
-    // Set up JS helper to resolve server base with cross-platform support
-    js.context.callMethod('eval', [r'''
-      window.resolveRuntimeServerBase = function() {
-        try {
-          var loc = window.location || { protocol: 'https:', host: '', hostname: '', origin: '' };
-          
-          // Check if we're on deployed cloud URL
-          if (loc.hostname === 'hear-all-v11-1.uc.r.appspot.com' || 
-              (loc.hostname && loc.hostname.endsWith('.appspot.com'))) {
-            console.log('[JS] Using cloud URL');
-            return 'https://hear-all-v11-1.uc.r.appspot.com';
-          }
-          
-          // Check if we're on localhost
-          var isLocal = loc.hostname === 'localhost' || 
-                       loc.hostname === '127.0.0.1' || 
-                       loc.hostname === '0.0.0.0';
-          
-          if (isLocal) {
-            // CRITICAL: Always use http for localhost, never https
-            console.log('[JS] Using local URL');
-            return 'http://localhost:3000';
-          }
-          
-          // Platform detection
-          var isMacOS = navigator.platform && navigator.platform.toLowerCase().indexOf('mac') >= 0;
-          
-          // For remote access from Mac, use cloud URL
-          if (isMacOS && !isLocal) {
-            console.log('[JS] MacOS remote, using cloud URL');
-            return 'https://hear-all-v11-1.uc.r.appspot.com';
-          }
-          
-          // Default handling
-          var base = loc.origin || 'http://localhost:3000';
-          
-          // CRITICAL FIX: Ensure localhost is always http
-          if (base.indexOf('localhost') !== -1 && base.indexOf('https://localhost') === 0) {
-            console.log('[JS] Windows fix: Converting https://localhost to http://localhost');
-            base = 'http://' + base.substring('https://'.length);
-          }
-          
-          return base;
-        } catch(e) { 
-          console.error('[JS] Error in resolveRuntimeServerBase:', e); 
-          return 'http://localhost:3000'; 
-        }
-      };
-      window.SERVER_BASE = window.resolveRuntimeServerBase();
-      console.log('[JS] Resolved SERVER_BASE at runtime ->', window.SERVER_BASE);
-    ''']);
-  } catch (_) {}
-}
+const String SERVER_BASE = String.fromEnvironment('SERVER_BASE', defaultValue: 'https://hear-all-v11-1.uc.r.appspot.com');
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -210,9 +97,6 @@ class _HomePageState extends State<HomePage> {
   bool useSimpleRecorder = false;
   dynamic fallbackBlob; // Blob from fallback recorder
   
-  // iOS Audio handling
-  bool _audioEnabled = false;
-  bool _isIOS = false;
 
   // Auto-connect handled by ChatSessionProvider
 
@@ -371,93 +255,10 @@ class _HomePageState extends State<HomePage> {
     ''']);
   }
 
-  // iOS Audio Keep-Alive System
-  Timer? _audioKeepAliveTimer;
-  bool _isIOSAudioKeepAliveActive = false;
-  
-  void _startIOSAudioKeepAlive() {
-    if (!_isIOS || _isIOSAudioKeepAliveActive) return;
-    
-    _isIOSAudioKeepAliveActive = true;
-    print("[audio] Starting iOS audio keep-alive system");
-    
-    // Start periodic silent audio to keep audio context alive
-    _audioKeepAliveTimer = Timer.periodic(Duration(seconds: 3), (timer) {
-      _playSilentAudio();
-    });
-    
-    // Set up touch event listeners to reactivate audio context
-    js.context.callMethod('eval', ['''
-      window.iosAudioReactivate = function() {
-        console.log("[audio] Touch event - reactivating iOS audio context");
-        if (window.audioCtx && window.audioCtx.state === 'suspended') {
-          window.audioCtx.resume().then(() => {
-            console.log("[audio] iOS audio context resumed by touch");
-          }).catch((err) => {
-            console.error("[audio] Failed to resume iOS audio context:", err);
-          });
-        }
-      };
-      
-      // Add touch listeners to common UI elements
-      document.addEventListener('touchstart', window.iosAudioReactivate, {passive: true});
-      document.addEventListener('click', window.iosAudioReactivate, {passive: true});
-    ''']);
-  }
-  
-  void _playSilentAudio() {
-    if (!_isIOS) return;
-    
-    js.context.callMethod('eval', ['''
-      if (window.audioCtx && window.audioCtx.state === 'running') {
-        // Create a very brief silent audio to keep context alive
-        const oscillator = window.audioCtx.createOscillator();
-        const gainNode = window.audioCtx.createGain();
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(window.audioCtx.destination);
-        
-        gainNode.gain.setValueAtTime(0, window.audioCtx.currentTime);
-        oscillator.frequency.setValueAtTime(440, window.audioCtx.currentTime);
-        
-        oscillator.start(window.audioCtx.currentTime);
-        oscillator.stop(window.audioCtx.currentTime + 0.01);
-      }
-    ''']);
-  }
-  
-  void _ensureIOSAudioContextActive() {
-    if (!_isIOS) return;
-    
-    js.context.callMethod('eval', ['''
-      if (window.audioCtx) {
-        if (window.audioCtx.state === 'suspended') {
-          console.log("[audio] iOS context suspended, attempting resume before TTS");
-          window.audioCtx.resume().then(() => {
-            console.log("[audio] iOS audio context resumed for TTS");
-          }).catch((err) => {
-            console.error("[audio] Failed to resume iOS audio context for TTS:", err);
-          });
-        } else {
-          console.log("[audio] iOS audio context already active:", window.audioCtx.state);
-        }
-      }
-    ''']);
-  }
-
   @override
   void initState() {
     super.initState();
     // Auto-connect handled by ChatSessionProvider
-    
-    // Check if we're on iOS
-    _checkIfIOS();
-    
-    // Start iOS audio keep-alive if needed
-    _startIOSAudioKeepAlive();
-    
-    // Install runtime helpers for proper server resolution
-    installRuntimeHelpers();
     
     // Set up JavaScript functions to call back into Flutter
     js.context['dartAppendTranscript'] = (String text) {
@@ -893,46 +694,15 @@ class _HomePageState extends State<HomePage> {
           // Wait for ICE gathering
           appendToTranscript("Creating offer...");
           
-          // Send offer to server - use proper URL resolution for cross-platform compatibility
-          let serverUrl = 'http://localhost:3000';
-          try {
-            if (window.resolveRuntimeServerBase && typeof window.resolveRuntimeServerBase === 'function') {
-              serverUrl = window.resolveRuntimeServerBase();
-              console.log("[webrtc] Resolved runtime server base:", serverUrl);
-            } else if (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') {
-              serverUrl = window.SERVER_BASE;
-            }
-            
-            // Cross-platform URL fixes
-            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-            const isMacOS = navigator.platform && navigator.platform.toLowerCase().indexOf('mac') >= 0;
-            
-            // Special handling for macOS remote access
-            if (isMacOS && !isLocal && serverUrl.includes('localhost')) {
-              console.log("[webrtc] MacOS detected with remote access, using cloud URL");
-              serverUrl = 'https://hear-all-v11-1.uc.r.appspot.com';
-            }
-            
-            // CRITICAL FIX for Windows - ensure localhost is always http://
-            if (serverUrl.startsWith('https://localhost')) {
-              console.log("[webrtc] Windows fix: Converting https://localhost to http://localhost");
-              serverUrl = 'http://' + serverUrl.substring('https://'.length);
-            }
-            
-            // Ensure we have a clean URL without double slashes
-            if (serverUrl.endsWith('/')) {
-              serverUrl = serverUrl.slice(0, -1);
-            }
-            
-          } catch(e) {
-            console.error("[webrtc] Error resolving server URL:", e);
-            serverUrl = 'http://localhost:3000';
-          }
-          
+          // Send offer to server - use the SERVER_BASE from Dart
+          // Prefer window.SERVER_BASE injected from Dart, fallback to deployed server
+          const serverUrl = (window.SERVER_BASE && typeof window.SERVER_BASE === 'string') 
+            ? window.SERVER_BASE 
+            : 'https://hear-all-v11-1.uc.r.appspot.com';
           const fullUrl = `${serverUrl}/offer`;
           appendToTranscript(`Sending offer to: ${fullUrl}`);
-          console.log("[webrtc] Server base from window:", window.SERVER_BASE);
-          console.log("[webrtc] Using server URL:", serverUrl);
+          console.log("Server base from window:", window.SERVER_BASE);
+          console.log("Using server URL:", serverUrl);
           
           try {
             // Log the SDP data being sent
@@ -1641,95 +1411,21 @@ class _HomePageState extends State<HomePage> {
     try {
       appendTranscript('[info] Using direct TTS API: $text');
       
-      // Ensure iOS audio context is active before TTS
-      _ensureIOSAudioContextActive();
-      
-      // Resolve the server base URL at runtime
-      String resolvedBase = resolveServerBase();
-      appendTranscript('[diag] Using API base: $resolvedBase');
-      
       // Make HTTP request to our TTS endpoint
       final response = await http.post(
-        Uri.parse('$resolvedBase/api/tts'),
+        Uri.parse('$SERVER_BASE/api/tts'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'text': text}),
       );
       
       if (response.statusCode == 200) {
         appendTranscript('[info] TTS API response received, playing audio...');
-        final audioBytes = response.bodyBytes;
-        final base64Audio = base64Encode(audioBytes);
         
-        // Enhanced iOS audio playback using JavaScript
-        js.context.callMethod('eval', ['''
-          (async function() {
-            try {
-              // Ensure audio context exists and is resumed (for iOS)
-              if (window.audioContext) {
-                console.log('[audio] Current audio context state:', window.audioContext.state);
-                if (window.audioContext.state === 'suspended') {
-                  await window.audioContext.resume();
-                  console.log('[audio] Resumed audio context for TTS playback');
-                }
-              } else {
-                // Create audio context if it doesn't exist
-                try {
-                  window.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                  console.log('[audio] Created new audio context for TTS');
-                } catch (e) {
-                  console.warn('[audio] Could not create audio context:', e);
-                }
-              }
-              
-              const audio = new Audio('data:audio/mpeg;base64,$base64Audio');
-              audio.volume = 1.0;
-              
-              // iOS-specific audio element setup
-              audio.setAttribute('preload', 'auto');
-              audio.setAttribute('playsinline', 'true');
-              
-              // For iOS and modern browsers, handle the play promise properly
-              const playPromise = audio.play();
-              
-              if (playPromise !== undefined) {
-                playPromise
-                  .then(() => {
-                    console.log('[audio] TTS playback started successfully');
-                    if (window.dartAppendTranscript) {
-                      window.dartAppendTranscript("[audio] Auto-playing incoming: TTS");
-                    }
-                  })
-                  .catch((error) => {
-                    console.error('[audio] TTS playback failed:', error);
-                    if (window.dartAppendTranscript) {
-                      window.dartAppendTranscript("[error] TTS playback failed: " + error.message);
-                    }
-                    // Specific handling for iOS permission errors
-                    if (error.name === 'NotAllowedError') {
-                      console.log('[audio] iOS audio permission required - check if Enable Audio was used');
-                      if (window.dartAppendTranscript) {
-                        window.dartAppendTranscript("[info] iOS detected - use 'Enable Audio' button above");
-                      }
-                      
-                      // Try to re-enable audio context
-                      if (window.audioContext && window.audioContext.state === 'suspended') {
-                        window.audioContext.resume().then(() => {
-                          console.log('[audio] Attempted to resume suspended audio context');
-                        }).catch((resumeError) => {
-                          console.error('[audio] Failed to resume audio context:', resumeError);
-                        });
-                      }
-                    }
-                  });
-              }
-            } catch (e) {
-              console.error('[audio] Error playing TTS:', e);
-              if (window.dartAppendTranscript) {
-                window.dartAppendTranscript("[error] Exception playing TTS: " + e.message);
-              }
-            }
-          })();
-        ''']);
+        // Play the audio using Web Audio API
+        final audioBlob = html.Blob([response.bodyBytes], 'audio/mpeg');
+        final audioUrl = html.Url.createObjectUrlFromBlob(audioBlob);
+        final audioElement = html.AudioElement()..src = audioUrl;
+        audioElement.play();
         
         appendTranscript('[success] Direct TTS audio playing');
       } else {
@@ -1976,13 +1672,9 @@ class _HomePageState extends State<HomePage> {
       }
       js_util.callMethod(formData, 'append', ['file', blob, fileName]);
       
-      // Resolve the server base URL at runtime
-      String resolvedBase = resolveServerBase();
-      appendTranscript('[diag] Using API base for STT: $resolvedBase');
-      
       // Create XMLHttpRequest to handle the upload
       final xhr = html.HttpRequest();
-      xhr.open('POST', '$resolvedBase/api/stt');
+      xhr.open('POST', '$SERVER_BASE/api/stt');
       
       // Set up completion handler
       xhr.onLoad.listen((event) {
@@ -2104,107 +1796,8 @@ class _HomePageState extends State<HomePage> {
     ''']);
   }
 
-  // iOS Audio handling methods
-  void _checkIfIOS() {
-    try {
-      final userAgent = html.window.navigator.userAgent.toLowerCase();
-      _isIOS = userAgent.contains('iphone') || 
-                userAgent.contains('ipad') || 
-                userAgent.contains('ipod') ||
-                (userAgent.contains('mac') && 'ontouchend' == html.document.documentElement?.getAttribute('ontouchend'));
-      
-      if (_isIOS) {
-        print('[audio] iOS detected - audio requires user interaction');
-        appendTranscript('[info] iOS device detected - audio will require user activation');
-        appendDiagnostic('[iOS] Device detected: ${html.window.navigator.userAgent}');
-        appendDiagnostic('[iOS] Audio enabled: $_audioEnabled');
-      } else {
-        appendDiagnostic('[Platform] Non-iOS device detected');
-      }
-      
-      // Check audio context state
-      try {
-        final audioState = js.context.callMethod('eval', ['''
-          (function() {
-            if (window.audioContext) {
-              return window.audioContext.state;
-            }
-            return 'no-context';
-          })();
-        ''']);
-        appendDiagnostic('[audio] Initial context state: $audioState');
-      } catch (e) {
-        appendDiagnostic('[audio] Could not check context state: $e');
-      }
-    } catch (e) {
-      print('[audio] Error detecting iOS: $e');
-      appendDiagnostic('[error] iOS detection failed: $e');
-    }
-  }
-
-  Future<void> _enableAudioForIOS() async {
-    try {
-      // Create and play a silent audio to unlock iOS audio
-      js.context.callMethod('eval', ['''
-        (async function() {
-          try {
-            // Create an audio context
-            window.audioContext = window.audioContext || new (window.AudioContext || window.webkitAudioContext)();
-            
-            // Resume audio context if suspended
-            if (window.audioContext.state === 'suspended') {
-              await window.audioContext.resume();
-              console.log('[audio] iOS audio context resumed');
-            }
-            
-            // Play a silent sound to unlock audio
-            const buffer = window.audioContext.createBuffer(1, 1, 22050);
-            const source = window.audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(window.audioContext.destination);
-            source.start(0);
-            
-            console.log('[audio] iOS audio unlocked');
-            if (window.dartAppendTranscript) {
-              window.dartAppendTranscript("[audio] iOS audio system unlocked and ready");
-            }
-            return true;
-          } catch (e) {
-            console.error('[audio] Error unlocking iOS audio:', e);
-            if (window.dartAppendTranscript) {
-              window.dartAppendTranscript("[error] Failed to unlock iOS audio: " + e.message);
-            }
-            return false;
-          }
-        })();
-      ''']);
-      
-      setState(() {
-        _audioEnabled = true;
-      });
-      
-      appendDiagnostic('[iOS] Audio successfully enabled and unlocked');
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Audio enabled! You can now hear TTS messages.'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (e) {
-      print('[audio] Error enabling iOS audio: $e');
-      appendTranscript('[error] Failed to enable iOS audio: $e');
-    }
-  }
-
   @override
   void dispose() {
-    // Clean up iOS audio keep-alive timer
-    _audioKeepAliveTimer?.cancel();
-    
     // Remove listeners
     final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
     settingsProvider.removeListener(_updateAudioSettings);
@@ -2392,8 +1985,6 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Column(
         children: [
-          // iOS Audio enable button (only shown on iOS when audio not enabled)
-          _buildIOSAudioButton(),
           // Room info/status bar
           Consumer<ChatSessionProvider>(
             builder: (context, chat, _) {
@@ -2550,37 +2141,6 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-        ],
-      ),
-    );
-  }
-
-  // Widget to show iOS audio enable button
-  Widget _buildIOSAudioButton() {
-    if (!_isIOS || _audioEnabled) return SizedBox.shrink();
-    
-    return Container(
-      padding: EdgeInsets.all(16),
-      color: Colors.orange.shade100,
-      child: Row(
-        children: [
-          Icon(Icons.volume_off, color: Colors.orange.shade800),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Tap to enable audio on iOS - required to hear TTS messages',
-              style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.w500),
-            ),
-          ),
-          ElevatedButton.icon(
-            onPressed: _enableAudioForIOS,
-            icon: Icon(Icons.volume_up),
-            label: Text('Enable Audio'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
-            ),
-          ),
         ],
       ),
     );
