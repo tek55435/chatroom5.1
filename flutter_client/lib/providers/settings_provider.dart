@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsProvider extends ChangeNotifier {
   bool _darkMode = false;
-  bool _playIncomingAudio = true;
+  bool _playIncomingAudio = false; // Default to false until persona sets preference
   bool _playOutgoingAudio = false;
   String _avatarSeed = '';
 
@@ -23,7 +23,7 @@ class SettingsProvider extends ChangeNotifier {
     
     // Load with defaults if not found
     _darkMode = prefs.getBool('darkMode') ?? false;
-    _playIncomingAudio = prefs.getBool('playIncomingAudio') ?? true;
+    _playIncomingAudio = prefs.getBool('playIncomingAudio') ?? false; // Default false until persona sets preference
   _playOutgoingAudio = prefs.getBool('playOutgoingAudio') ?? false;
     _avatarSeed = prefs.getString('avatarSeed') ?? '';
     

@@ -398,7 +398,7 @@ class _HomePageState extends State<HomePage> {
               type: 'session.update',
               session: {
                 modalities: ['text', 'audio'],
-                instructions: 'You are a helpful assistant. You will respond in a conversational manner, speaking naturally as if having a voice conversation. Keep responses concise and natural. Wait for the user to explicitly send audio before responding.',
+                instructions: 'You are a passive relay system. Do not generate any responses. Only process audio data for transmission between users. Do not speak or respond unless explicitly asked to relay a message.',
                 voice: 'alloy',
                 input_audio_format: 'pcm16',
                 output_audio_format: 'pcm16',
@@ -407,7 +407,7 @@ class _HomePageState extends State<HomePage> {
                 },
                 turn_detection: null,  // Disable automatic turn detection - manual control only
                 temperature: 0.8,
-                max_response_output_tokens: 'inf'
+                max_response_output_tokens: 1  // Minimal responses
               }
             };
             console.log("Sending session config:", sessionConfig);

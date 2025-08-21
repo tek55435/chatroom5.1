@@ -575,6 +575,11 @@ class _PersonaCreationDialogState extends State<PersonaCreationDialog> {
       final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
       await settingsProvider.setAvatarSeed(_nameController.text.trim());
 
+      // Set audio defaults based on interaction mode
+      // Type to Speak users: playIncomingAudio = false (they don't want to hear others)
+      // Speak to Type users: playIncomingAudio = true (they want to hear others)
+      await settingsProvider.setPlayIncomingAudio(!_isTypeToSpeakMode);
+
       // Close dialog
       Navigator.of(context).pop();
 

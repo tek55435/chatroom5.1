@@ -414,7 +414,7 @@ function makeTTSRequest(text, voice = 'alloy') {
   });
 }
 
-// WebRTC Realtime offer endpoint - DYNAMIC SDP MATCHING
+// WebRTC Realtime offer endpoint - FIXED VERSION
 mainApp.post('/offer', express.json({ limit: '5mb' }), async (req, res) => {
   try {
     console.log('[webrtc] Processing offer request');
@@ -439,135 +439,61 @@ mainApp.post('/offer', express.json({ limit: '5mb' }), async (req, res) => {
       return res.status(400).json({ error: 'invalid_sdp_format', detail: 'SDP must start with v=' });
     }
 
-    console.log('[webrtc] Valid SDP received, parsing offer structure...');
-    
-    // Parse the offer SDP to extract structure and ordering
-    const offerLines = offerSdp.trim().split(/\r?\n/);
-    const mediaLines = [];
-    const bundleGroup = [];
-    let currentMediaSection = null;
-    
-    // First pass: extract media sections and their order
-    for (let i = 0; i < offerLines.length; i++) {
-      const line = offerLines[i];
-      
-      if (line.startsWith('m=')) {
-        // Save previous media section
-        if (currentMediaSection) {
-          mediaLines.push(currentMediaSection);
-        }
-        
-        // Start new media section
-        const mediaMatch = line.match(/m=(\w+) (\d+) ([\w\/]+) (.+)/);
-        if (mediaMatch) {
-          currentMediaSection = {
-            type: mediaMatch[1], // audio, video, etc.
-            port: mediaMatch[2],
-            protocol: mediaMatch[3],
-            codecs: mediaMatch[4].split(' '),
-            mid: null,
-            attributes: []
-          };
-        }
-      } else if (line.startsWith('a=mid:') && currentMediaSection) {
-        currentMediaSection.mid = line.split(':')[1];
-        if (!bundleGroup.includes(currentMediaSection.mid)) {
-          bundleGroup.push(currentMediaSection.mid);
-        }
-      } else if (line.startsWith('a=') && currentMediaSection) {
-        currentMediaSection.attributes.push(line);
-      }
+    console.log('[webrtc] Valid SDP received, calling OpenAI Realtime API...');
+
+    // Call OpenAI Realtime API with correct endpoint and headers
+    let apiResponse;
+    try {
+      apiResponse = await fetch('https://api.openai.com/v1/realtime/sessions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Beta': 'realtime=v1'
+        },
+        body: JSON.stringify({
+          model: model,
+          voice: 'alloy',
+          instructions: 'You are a passive relay system. Do not generate any responses. Only process audio data for transmission between users. Do not speak or respond unless explicitly asked to relay a message.',
+          input_audio_transcription: {
+            model: 'whisper-1'
+          },
+          sdp: offerSdp
+        })
+      });
+    } catch (fetchError) {
+      console.error('[webrtc] Fetch error calling OpenAI API:', fetchError.message);
+      return res.status(502).json({ 
+        error: 'api_connection_failed', 
+        detail: `Failed to connect to OpenAI API: ${fetchError.message}` 
+      });
     }
-    
-    // Add the last media section
-    if (currentMediaSection) {
-      mediaLines.push(currentMediaSection);
+
+    if (!apiResponse.ok) {
+      const errorData = await apiResponse.text();
+      console.error('[webrtc] OpenAI API error:', apiResponse.status, errorData);
+      return res.status(apiResponse.status).json({ 
+        error: 'openai_api_error', 
+        detail: errorData 
+      });
     }
+
+    const responseData = await apiResponse.json();
+    console.log('[webrtc] Got response from OpenAI Realtime API');
+
+    // Extract the answer SDP from the response
+    const answerSdp = responseData.sdp || responseData.session_sdp || responseData.answer;
     
-    console.log('[webrtc] Parsed', mediaLines.length, 'media sections:', 
-                mediaLines.map(m => `${m.type}(${m.mid})`).join(', '));
-    
-    // Generate answer SDP that exactly matches the offer structure
-    const sessionId = Math.floor(Math.random() * 1000000000);
-    const answerLines = [];
-    
-    // Standard SDP headers
-    answerLines.push('v=0');
-    answerLines.push(`o=- ${sessionId} 2 IN IP4 127.0.0.1`);
-    answerLines.push('s=-');
-    answerLines.push('t=0 0');
-    
-    // Bundle group in the same order as the offer
-    if (bundleGroup.length > 0) {
-      answerLines.push(`a=group:BUNDLE ${bundleGroup.join(' ')}`);
+    if (!answerSdp) {
+      console.error('[webrtc] No SDP in OpenAI response:', responseData);
+      return res.status(500).json({ 
+        error: 'no_sdp_in_response', 
+        detail: 'OpenAI API did not return SDP data' 
+      });
     }
-    
-    answerLines.push('a=extmap-allow-mixed');
-    answerLines.push('a=msid-semantic: WMS');
-    
-    // Generate media sections in the same order as the offer
-    for (const mediaSection of mediaLines) {
-      if (mediaSection.type === 'audio') {
-        // Accept audio with proper codec negotiation
-        const preferredCodec = mediaSection.codecs.includes('111') ? '111' : mediaSection.codecs[0];
-        answerLines.push(`m=audio 9 UDP/TLS/RTP/SAVPF ${mediaSection.codecs.join(' ')}`);
-        answerLines.push('c=IN IP4 0.0.0.0');
-        answerLines.push('a=rtcp:9 IN IP4 0.0.0.0');
-        answerLines.push('a=ice-ufrag:test');
-        answerLines.push('a=ice-pwd:testpassword123456789012');
-        answerLines.push('a=ice-options:trickle');
-        answerLines.push('a=fingerprint:sha-256 12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0');
-        answerLines.push('a=setup:active');
-        answerLines.push(`a=mid:${mediaSection.mid}`);
-        answerLines.push('a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level');
-        answerLines.push('a=sendrecv');
-        answerLines.push('a=rtcp-mux');
-        
-        // Add codec mappings based on what the client offered
-        for (const codec of mediaSection.codecs) {
-          switch (codec) {
-            case '111':
-              answerLines.push('a=rtpmap:111 opus/48000/2');
-              answerLines.push('a=fmtp:111 minptime=10;useinbandfec=1');
-              break;
-            case '103':
-              answerLines.push('a=rtpmap:103 ISAC/16000');
-              break;
-            case '9':
-              answerLines.push('a=rtpmap:9 G722/8000');
-              break;
-            case '0':
-              answerLines.push('a=rtpmap:0 PCMU/8000');
-              break;
-            case '8':
-              answerLines.push('a=rtpmap:8 PCMA/8000');
-              break;
-          }
-        }
-        
-      } else if (mediaSection.type === 'video') {
-        // Reject video for audio-only session
-        answerLines.push('m=video 0 UDP/TLS/RTP/SAVPF 96');
-        answerLines.push('c=IN IP4 0.0.0.0');
-        answerLines.push('a=inactive');
-        answerLines.push(`a=mid:${mediaSection.mid}`);
-        
-      } else {
-        // Handle other media types by rejecting them
-        answerLines.push(`m=${mediaSection.type} 0 UDP/TLS/RTP/SAVPF 96`);
-        answerLines.push('c=IN IP4 0.0.0.0');
-        answerLines.push('a=inactive');
-        answerLines.push(`a=mid:${mediaSection.mid}`);
-      }
-    }
-    
-    // Join with CRLF line endings as per SDP specification
-    const answerSdp = answerLines.join('\r\n') + '\r\n';
-    
-    console.log('[webrtc] Generated dynamic SDP answer');
-    console.log('[webrtc] Media order preserved:', mediaLines.map(m => m.type).join(' -> '));
-    console.log('[webrtc] Bundle group:', bundleGroup.join(' '));
-    
+
+    // CRITICAL FIX: Return raw SDP text with correct Content-Type
+    console.log('[webrtc] Returning SDP answer (length:', answerSdp.length, ')');
     res.setHeader('Content-Type', 'text/plain');
     res.send(answerSdp);
 
@@ -650,6 +576,33 @@ mainApp.post('/api/stt', sttUpload, async (req, res) => {
   }
 });
 
+
+// Chat session management endpoints
+mainApp.post('/api/chat/new-session', express.json(), async (req, res) => {
+  try {
+    const sessionId = 'room_' + Math.random().toString(36).substr(2, 9);
+    console.log(`[chat] Created new session: ${sessionId}`);
+    res.json({ sessionId });
+  } catch (error) {
+    console.error('[chat] Error creating session:', error);
+    res.status(500).json({ error: 'Failed to create session' });
+  }
+});
+
+mainApp.get('/api/chat/sessions/:sessionId', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    console.log(`[chat] Session info requested for: ${sessionId}`);
+    res.json({
+      sessionId,
+      status: 'active',
+      created: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[chat] Error getting session info:', error);
+    res.status(500).json({ error: 'Failed to get session info' });
+  }
+});
 // Catch-all handler to serve the Flutter app
 mainApp.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -662,3 +615,4 @@ mainServer.listen(PORT, () => {
   console.log(`Chat WebSocket: ws://localhost:${PORT}/chat?sessionId=YOUR_SESSION_ID`);
   console.log(`Health: GET http://localhost:${PORT}/api/health`);
 });
+
